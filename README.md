@@ -13,6 +13,7 @@
 
 - [为什么不是直接刷题](#为什么不是直接刷题)
 - [快速开始](#快速开始)
+- [应用一览](#应用一览)
 - [功能地图](#功能地图)
 - [每道题都带什么](#每道题都带什么)
 - [记忆引擎：SM-2 怎么运作](#记忆引擎sm-2-怎么运作)
@@ -66,6 +67,35 @@ python3 parse.py
 ```
 
 配图另跑一次 `python3 img2webp.py`（可中断重跑，已转换的会自动跳过）。
+</details>
+
+## 应用一览
+
+> 以下为实际运行截图（暗色主题，演示账号数据，WebP 格式，共 17 张）。
+
+| | |
+| :---: | :---: |
+| **总览面板** — 今日任务、六模块进度、掌握度分布 | **登录 / 注册 — 支持免注册游客模式** |
+| ![总览面板](docs/screenshots/02-dashboard.webp) | ![登录注册](docs/screenshots/01-login.webp) |
+| **练习答题 — 逐题作答，正确/错误即时高亮** | **复习到期 — SM-2 记忆引擎推送的当日队列** |
+| ![练习答题](docs/screenshots/04-study-question.webp) | ![复习到期](docs/screenshots/05-review.webp) |
+| **真题浏览 — 地区 / 年份 / 关键字全量筛选** | **考点导航 — 跨省份同类考法横向对比** |
+| ![真题浏览](docs/screenshots/06-browse.webp) | ![考点导航](docs/screenshots/07-kadian.webp) |
+| **错题本 — 答错自动收集，稳定后自然淡出** | **我的收藏 — 重点易错题集中练** |
+| ![错题本](docs/screenshots/08-wrongbook.webp) | ![我的收藏](docs/screenshots/09-favorites.webp) |
+| **模拟考试 — 限时整卷配置** | **模考进行中 — 倒计时 + 题号跳转 + 即时判分** |
+| ![模拟考试](docs/screenshots/10-exam-config.webp) | ![模考进行中](docs/screenshots/11-exam-running.webp) |
+| **材料组题 — 资料分析按同段材料成组（1,578 组）** | **疑点复核 — 官方解析存疑题逐条核验** |
+| ![材料组题](docs/screenshots/12-materials.webp) | ![疑点复核](docs/screenshots/13-doubts.webp) |
+| **数据统计 — 打卡 / 热力图 / 正确率 / 薄弱考点** | **题目详情 — 审题路径 · 最快解法 · 易错坑** |
+| ![数据统计](docs/screenshots/14-stats.webp) | ![题目详情](docs/screenshots/16-detail.webp) |
+| **设置 — 账号 / 每日目标 / 数据管理** | **亮色主题 — 暗色 / 亮色 / 跟随系统 三态** |
+| ![设置](docs/screenshots/15-settings.webp) | ![亮色主题](docs/screenshots/17-dashboard-light.webp) |
+
+<details>
+<summary><b>更多界面：练习范围配置（模块 / 大类 / 考点关键字）</b></summary>
+
+![练习范围配置](docs/screenshots/03-study-config.webp)
 </details>
 
 ## 功能地图
