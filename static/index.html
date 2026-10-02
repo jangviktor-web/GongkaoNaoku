@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>考公脑库 · 间隔重复学习系统</title>
+<meta name="kg-app-ver" content="20261001d">
+<script>
+(function(){
+  try{
+    var t=localStorage.getItem('kg_theme')||'dark';
+    var real=t;
+    if(t==='auto'){ real=(window.matchMedia&&matchMedia('(prefers-color-scheme: light)').matches)?'light':'dark'; }
+    document.documentElement.setAttribute('data-theme',real);
+    var fs=localStorage.getItem('kg_fontscale'); if(fs) document.documentElement.style.fontSize=fs+'px';
+    if(localStorage.getItem('kg_focus')==='1') document.documentElement.setAttribute('data-focus','1');
+  }catch(e){ document.documentElement.setAttribute('data-theme','dark'); }
+})();
+</script>
+<link rel="stylesheet" href="/static/style.css?v=20261001d">
+</head>
+<body>
+<div id="layout">
+  <aside id="sidebar">
+    <div class="brand-row">
+      <div class="brand">📚 考公脑库<small>记忆曲线刷题系统</small></div>
+      <div class="top-actions">
+        <button id="user-name" class="user-chip" title="点击切换 / 新建账号">未登录</button>
+        <button id="theme-toggle" class="theme-btn" title="切换主题（暗/亮/跟随系统）">☀️</button>
+      </div>
+    </div>
+    <nav id="nav">
+      <a href="#/">总览面板</a>
+      <a href="#/study">开始练习</a>
+      <a href="#/review">复习到期</a>
+      <a href="#/wrongbook">错题本</a>
+      <a href="#/favorites">我的收藏</a>
+      <a href="#/exam">模拟考试</a>
+      <a href="#/browse">真题浏览</a>
+      <a href="#/kadian">考点导航</a>
+      <a href="#/materials">材料组题</a>
+      <a href="#/doubts">疑点复核</a>
+      <a href="#/stats">数据统计</a>
+      <a href="#/settings">设置</a>
+    </nav>
+    <div id="side-stats"></div>
+  </aside>
+  <main id="app"><div class="loading">加载中…</div></main>
+  <button id="focus-exit" class="focus-exit" title="退出专注模式">专注模式 · 点击退出</button>
+</div>
+<script src="/static/app.js?v=20261001d"></script>
+<script>
+/* 兜底自救：8 秒后主区域仍是"加载中…"（旧版本缓存 / 脚本异常导致），
+   就给出一键强制加载最新版的入口，避免页面永远卡在加载状态。 */
+setTimeout(function () {
+  try {
+    if (document.querySelector('.modal-mask') || document.getElementById('lg-user')) return;
+    var a = document.getElementById('app');
+    if (!a || !a.querySelector('.loading')) return;
+    a.innerHTML = '<div style="padding:32px;text-align:center;line-height:2">'
+      + '<div>页面没有正常加载完成，通常是浏览器里残留的旧版本缓存导致。</div>'
+      + '<button id="kg-rescue" style="margin-top:14px;padding:10px 22px;border-radius:8px;cursor:pointer">强制加载最新版本</button>'
+      + '<div style="opacity:.6;font-size:12px;margin-top:10px">也可以按 Ctrl+Shift+R（Mac 为 Cmd+Shift+R）硬刷新</div>'
+      + '</div>';
+    document.getElementById('kg-rescue').onclick = function () {
+      location.replace('/index.html?v=20261001d&t=' + Date.now());
+    };
+  } catch (e) { }
+}, 8000);
+</script>
+</body>
+</html>

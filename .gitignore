@@ -1,0 +1,36 @@
+# ---------- 数据库备份与运行时快照（不入库；主库 kaogong.db 走 Git LFS 上传） ----------
+*.db.bak*
+*.sqlite
+*.sqlite3
+
+# ---------- 题库配图 90-图片/ 随仓库提供（单文件小、总量大，走普通 git） ----------
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---------- 日志与运行时产物 ----------
+*.log
+*.out
+keepalive.log
+keepalive.out
+server.log
+server-run.log
+server8301.log
+server8302.log
+refill.log
+webp.log
+webp80.log
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---------- 本机包装+codegraph 索引导出 ----------
+*.egg
+.codegraph/
