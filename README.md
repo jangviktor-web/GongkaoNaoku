@@ -41,8 +41,17 @@
 ## 快速开始
 
 ```bash
-git clone https://gitee.com/jangviktor/kaogong-spaced-repetition.git
-cd kaogong-spaced-repetition
+git clone https://gitee.com/jangviktor/GongkaoNaoku.git   # Gitee（国内速度推荐）
+cd GongkaoNaoku
+python3 assemble_db.py   # 合并分卷题库，生成 kaogong.db（约 10 秒）
+python3 server.py        # 启动
+```
+
+或者
+
+```bash
+git clone https://github.com/jangviktor-web/GongkaoNaoku.git   # GitHub
+cd GongkaoNaoku
 python3 assemble_db.py   # 合并分卷题库，生成 kaogong.db（约 10 秒）
 python3 server.py        # 启动
 ```
@@ -235,7 +244,7 @@ python3 parse.py
 ## 项目结构
 
 ```
-kaogong-webapp/
+GongkaoNaoku/
 ├─ server.py              Web 服务 + JSON API + 图片服务（标准库实现）
 ├─ sm2.py                 SM-2 间隔重复算法
 ├─ parse.py               题库 Vault → SQLite 导入器（增量，保留进度）
@@ -297,7 +306,7 @@ kaogong-webapp/
 
 对助手说：
 
-> 帮我克隆这个仓库到工作区：`git clone https://gitee.com/jangviktor/kaogong-spaced-repetition.git /workspace/kaogong-webapp`
+> 帮我克隆这个仓库到工作区：`git clone https://gitee.com/jangviktor/GongkaoNaoku.git /workspace/kaogong-webapp`
 
 也可以把仓库打包成 zip 直接上传（仓库含 200MB 题库数据，克隆/上传需几分钟，耐心等它跑完）。
 
@@ -402,8 +411,8 @@ WorkBuddy 内置浏览器预览，可以先自己刷几题确认一切正常。
 题库收录自公开渠道整理的「考公真题整理」Vault——**506 份试卷、2008–2026 年、31 个省区市 + 国考 + 选调 + 联考**的行测真题，试卷以各考试当年考生回忆版为基础整理。详细构成与完整地区/年份分布见上文 [题库来源明细](#题库来源明细)。
 
 ```bash
-git clone https://gitee.com/jangviktor/kaogong-spaced-repetition.git
-cd kaogong-spaced-repetition
+git clone https://gitee.com/jangviktor/GongkaoNaoku.git    # 或 GitHub: https://github.com/jangviktor-web/GongkaoNaoku.git
+cd GongkaoNaoku
 python3 assemble_db.py   # 合并分卷题库 → kaogong.db
 python3 server.py
 ```
