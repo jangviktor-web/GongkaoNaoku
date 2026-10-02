@@ -11,8 +11,11 @@
 ![前端](https://img.shields.io/badge/前端-原生%20JS%20SPA-orange)
 ![许可](https://img.shields.io/badge/许可-仅供个人学习-lightgrey)
 
+📚 题库与蒸馏方法来自开源项目 [ERRRC/xingcezhenti](https://github.com/ERRRC/xingcezhenti)（515 卷 / 58,890 题行），本项目在其基础上**逐题去重为 27,506 道**，并做结构化深度标注与 SM-2 复习排程
+
+为什么「58,890 → 27,506」？[逐题核查结论看这里](#素材来源与致谢)
+
 </div>
-> 📖 **题库来源**：27,506 道行测真题与蒸馏方法来自开源项目 [ERRRC/xingcezhenti](https://github.com/ERRRC/xingcezhenti)（515 卷 / 58,890 题行 / 图片本地化），本项目在其基础上做筛选去重、结构化深度标注与 SM-2 复习排程。为什么「58,890 → 27,506」？逐题核查结论见 [为什么题量不一样](#素材来源与致谢)。
 
 ## 目录
 
