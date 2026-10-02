@@ -5,8 +5,6 @@
 **把 27,506 道行测真题，变成一台听话的记忆机器。**
 不是题库浏览器，是间隔重复引擎——学过的题，会在你刚好要忘的那一刻回来找你。
 
-[![RepoStars](https://repostars.dev/api/embed?repo=jangviktor-web%2FGongkaoNaoku&theme=grape)](https://repostars.dev/?repos=jangviktor-web%2FGongkaoNaoku&theme=grape)
-
 ![Python](https://img.shields.io/badge/Python-3.8+-3776AB?logo=python&logoColor=white)
 ![依赖](https://img.shields.io/badge/依赖-零第三方库-brightgreen)
 ![存储](https://img.shields.io/badge/存储-SQLite%20单文件-blue)
@@ -433,3 +431,15 @@ python3 server.py
 - 本系统只做「学习 / 练习 / 复习」，不改动原始题库笔记。
 - 真题、选项、材料、配图版权归原作者及原题库平台，**仅供个人学习使用**。
 - 解析由程序批量抽取，个别题（尤其纯图形选项）标注以原库为准；发现疑点会在题内「疑点待复核」区提示。
+
+---
+
+<div align="center">
+
+**如果这份题库帮你记住了一道曾经做错的题，欢迎点一个 ⭐**
+
+[![RepoStars](https://repostars.dev/api/embed?repo=jangviktor-web%2FGongkaoNaoku&theme=grape)](https://repostars.dev/?repos=jangviktor-web%2FGongkaoNaoku&theme=grape)
+
+**考公脑库** · 把每一道做过的题，都变成稳稳记住的题
+
+</div>
