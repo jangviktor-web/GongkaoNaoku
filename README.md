@@ -1,13 +1,19 @@
+<div align="center">
+
 # 考公脑库
 
-> 把 **27,506 道行测真题**变成一台听话的记忆机器。
-> 不是题库浏览器，是间隔重复引擎——学过的题，会在你刚好要忘的那一刻回来找你。
+**把 27,506 道行测真题，变成一台听话的记忆机器。**
+不是题库浏览器，是间隔重复引擎——学过的题，会在你刚好要忘的那一刻回来找你。
+
+[![RepoStars](https://repostars.dev/api/embed?repo=jangviktor-web%2FGongkaoNaoku&theme=grape)](https://repostars.dev/?repos=jangviktor-web%2FGongkaoNaoku&theme=grape)
 
 ![Python](https://img.shields.io/badge/Python-3.8+-3776AB?logo=python&logoColor=white)
 ![依赖](https://img.shields.io/badge/依赖-零第三方库-brightgreen)
 ![存储](https://img.shields.io/badge/存储-SQLite%20单文件-blue)
 ![前端](https://img.shields.io/badge/前端-原生%20JS%20SPA-orange)
 ![许可](https://img.shields.io/badge/许可-仅供个人学习-lightgrey)
+
+</div>
 > 📖 **题库来源**：27,506 道行测真题与蒸馏方法来自开源项目 [ERRRC/xingcezhenti](https://github.com/ERRRC/xingcezhenti)（515 卷 / 58,890 题行 / 图片本地化），本项目在其基础上做筛选去重、结构化深度标注与 SM-2 复习排程。为什么「58,890 → 27,506」？逐题核查结论见 [为什么题量不一样](#素材来源与致谢)。
 
 ## 目录
@@ -106,7 +112,9 @@ python3 parse.py
 <details>
 <summary><b>更多界面：练习范围配置（模块 / 大类 / 考点关键字）</b></summary>
 
-![练习范围配置](docs/screenshots/03-study-config.webp)
+<p align="center">
+  <img src="docs/screenshots/03-study-config.webp" alt="练习范围配置" width="720">
+</p>
 </details>
 
 ## 功能地图
@@ -402,7 +410,7 @@ WorkBuddy 内置浏览器预览，可以先自己刷几题确认一切正常。
 
 </details>
 
-> 🙏 **特别致谢 ERRRC 及该项目的所有贡献者**——正是这份真题齐全、图片本地化、结构规整的开放题库，才有了本应用 27,506 张可复习的深度卡片。
+<p align="center">🙏 <b>特别致谢 <a href="https://github.com/ERRRC/xingcezhenti">ERRRC</a> 及该项目的所有贡献者</b><br>正是这份真题齐全、图片本地化、结构规整的开放题库，才有了本应用 27,506 张可复习的深度卡片。</p>
 
 ## 题库数据从哪来（已随仓库提供）
 
