@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/logo.webp" alt="考公脑库 Logo" width="140">
+
 # 考公脑库
 
 **把 27,506 道行测真题，变成一台听话的记忆机器。**
