@@ -7,6 +7,8 @@
 **把 27,506 道行测真题，变成一台听话的记忆机器。**
 不是题库浏览器，是间隔重复引擎——学过的题，会在你刚好要忘的那一刻回来找你。
 
+[![在线体验](https://img.shields.io/badge/🚀_在线体验_·_免注册可用-2EA043?style=for-the-badge)](https://a2de5e308362285fb.app.workbuddy.host/)
+
 ![Python](https://img.shields.io/badge/Python-3.8+-3776AB?logo=python&logoColor=white)
 ![依赖](https://img.shields.io/badge/依赖-零第三方库-brightgreen)
 ![存储](https://img.shields.io/badge/存储-SQLite%20单文件-blue)
@@ -48,6 +50,8 @@
 题库只是载体，真正的产品是**复习的那条时间线**。
 
 ## 快速开始
+
+> 🚀 **不想安装？** [先打开线上版体验一下](https://a2de5e308362285fb.app.workbuddy.host/)——注册账号或点「游客模式」，10 秒开刷。觉得好用再回来自建，数据完全本地。
 
 ```bash
 git clone https://gitee.com/jangviktor/GongkaoNaoku.git   # Gitee（国内速度推荐）
@@ -305,6 +309,8 @@ GongkaoNaoku/
 ## 部署到 WorkBuddy 在线应用（无需本机安装）
 
 本项目除了在本地跑，还可以一键部署为 **WorkBuddy 在线应用**：部署后获得一个独立公开网址，同学、研友浏览器打开即用——**不必人人装 Python、不必各自拷题库**，所有学习数据存服务端按账号隔离。
+
+> 💚 本项目自己就跑着一个这样的线上实例——[点此体验](https://a2de5e308362285fb.app.workbuddy.host/)，你部署完成后的效果就是它这样。
 
 以下步骤为本项目**实际部署过程**的完整还原，全程只需要对 WorkBuddy 的 AI 助手「说人话」。
 
