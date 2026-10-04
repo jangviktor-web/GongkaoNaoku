@@ -3,7 +3,7 @@
 """考公间隔重复系统 - 零依赖后端 (Python 标准库)
 启动:  python server.py    然后浏览器打开 http://127.0.0.1:8300
 """
-import os, re, sys, json, shutil, sqlite3, datetime, mimetypes, urllib.parse, threading, email.utils, hashlib, secrets
+import os, re, sys, json, gzip, shutil, sqlite3, datetime, mimetypes, urllib.parse, threading, email.utils, hashlib, secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -463,12 +463,34 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _send(self, code, body, ctype="application/json; charset=utf-8", extra=None):
+    # gzip 压缩结果缓存（静态文件按 path+mtime 复用，避免每请求重复压缩）
+    _GZ_CACHE = {}
+    _GZ_TYPES = ("text/", "application/json", "application/javascript")
+
+    def _send(self, code, body, ctype="application/json; charset=utf-8", extra=None, gz_key=None):
         if isinstance(body, (dict, list)):
             body = json.dumps(body, ensure_ascii=False).encode("utf-8")
         elif isinstance(body, str):
             body = body.encode("utf-8")
         self.send_response(code)
+        # gzip：文本类响应 + 客户端支持 + 超过阈值才压（304/HEAD/小响应自动跳过）；
+        # 必须在 send_response（状态行）之后、end_headers 之前发头
+        if (code == 200 and gz_key is not False and len(body) > 512
+                and "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+                and any(t in ctype for t in self._GZ_TYPES)):
+            if gz_key:
+                hit = self._GZ_CACHE.get(gz_key)
+                if hit and hit[0] == gz_key[1]:
+                    body = hit[1]
+                else:
+                    body = gzip.compress(body, 6)
+                    if len(self._GZ_CACHE) > 64:
+                        self._GZ_CACHE.clear()
+                    self._GZ_CACHE[gz_key] = (gz_key[1], body)
+            else:
+                body = gzip.compress(body, 6)
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         # 跨域：云端服务器常与本机应用不同源（不同主机/端口），需放行 CORS
@@ -518,7 +540,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send(304, b"", extra=extra)
                 except Exception:
                     pass
-        self._send(200, data, ctype, extra=extra)
+        self._send(200, data, ctype, extra=extra, gz_key=(path, int(st.st_mtime)))
 
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
@@ -544,9 +566,10 @@ class Handler(BaseHTTPRequestHandler):
             fp = os.path.normpath(os.path.join(STATIC, path[len("/static/"):]))
             if not fp.startswith(STATIC):
                 return self._send(403, {"error": "forbidden"})
-            # 页面脚本/样式：改版后必须立即可见 → no-cache + ETag 校验
+            # 页面脚本/样式：内容随 ?v= 版本串变化 → 强缓存 30 天，版本升级即换 URL 必回源，
+            # 日常访问零协商 RTT（此前 no-cache 每次都多付一个往返）
             if fp.endswith(".js") or fp.endswith(".css"):
-                return self._file(fp, cache=True, revalidate=True)
+                return self._file(fp, cache=True, max_age=2592000)
             return self._file(fp, cache=True, max_age=600)
         if path.startswith("/90-图片/"):
             rel = path[len("/90-图片/"):]
@@ -555,7 +578,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(403, {"error": "forbidden"})
             if not os.path.exists(fp):  # 缺图兜底：返回"图片暂缺"占位 WebP，避免破图图标
                 fp = os.path.join(IMG_ROOT, "__missing__.webp")
-            return self._file(fp, cache=True, max_age=86400)
+            return self._file(fp, cache=True, max_age=2592000)  # 图片内容不变，长缓存省回源
         if path.startswith("/api/"):
             try:
                 return self.api(path, g)

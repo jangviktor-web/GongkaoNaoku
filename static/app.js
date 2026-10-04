@@ -4,7 +4,7 @@
    旧版页面被浏览器 / CDN 边缘节点用 max-age=86400 强缓存，导致"改了代码但打开还是旧界面"。
    这里让脚本核对页面里的版本标记：不一致就一次性跳到带版本号的新地址，
    绕过浏览器与边缘节点的两层缓存。kg_healed 防止极端情况下死循环。 */
-const APP_VER = '20261004a';
+const APP_VER = '20261005a';
 let HEALING = false;
 (function selfHeal() {
   try {
@@ -1527,11 +1527,16 @@ async function doDeleteUser() {
   if (window.matchMedia) {
     try { matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { if (getTheme() === 'auto') applyTheme('auto'); }); } catch (e) { }
   }
-  try { BOOT = await API('/api/bootstrap'); } catch (e) { return fatal('后端未就绪：' + e); }
+  // bootstrap 与 auth/me 并行发起（省一个往返 RTT；me 依赖的 token 在 localStorage，无先后依赖）
+  const bootP = API('/api/bootstrap').then(b => ({ ok: true, b }), e => ({ ok: false, e }));
+  const meP = fetch('/api/auth/me?token=' + encodeURIComponent(tok()))
+    .then(r => r.json()).catch(() => null);
+  const br = await bootP;
+  if (!br.ok) return fatal('后端未就绪：' + br.e);
+  BOOT = br.b;
 
   // 判断是否已登录：未登录则显示登录 / 注册界面
-  let me = { ok: false };
-  try { me = await fetch('/api/auth/me?token=' + encodeURIComponent(tok())).then(r => r.json()); } catch (e) { }
+  let me = (await meP) || { ok: false };
   if (me && me.ok && me.user) {
     ME = me.user;
   } else {
