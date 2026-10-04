@@ -3,7 +3,7 @@
 """考公间隔重复系统 - 零依赖后端 (Python 标准库)
 启动:  python server.py    然后浏览器打开 http://127.0.0.1:8300
 """
-import os, re, sys, json, sqlite3, datetime, mimetypes, urllib.parse, threading, email.utils, hashlib, secrets
+import os, re, sys, json, shutil, sqlite3, datetime, mimetypes, urllib.parse, threading, email.utils, hashlib, secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -16,7 +16,8 @@ DEFAULT_UID = "u1"
 MAX_USERS = 3
 
 VAULT_ROOT = os.environ.get("KAOGONG_VAULT") or os.path.abspath(os.path.join(HERE, "..", "kaogongzhentizhengliu-main"))
-DB_PATH = os.path.join(HERE, "kaogong.db")
+DB_PATH = os.path.join(HERE, "kaogong.db")          # 题库（只读，ATTACH 为 qdb）
+USERS_DB_PATH = os.path.join(HERE, "users.db")      # 用户库（主连接：账号/学习记录，首次启动自动生成）
 # 图片优先读本目录内的自包含副本（WebP），没有再回退到原题库
 _LOCAL_IMG = os.path.join(HERE, "90-图片")
 IMG_ROOT = _LOCAL_IMG if os.path.isdir(_LOCAL_IMG) else os.path.join(VAULT_ROOT, "90-图片")
@@ -28,9 +29,14 @@ _LOCK = threading.Lock()
 _conn_local = threading.local()
 
 def db():
+    """主连接 = 用户库 users.db；题库 kaogong.db 以别名 qdb ATTACH 进来。
+    题库表一律写 qdb.questions 等带前缀引用；跨库 JOIN/事务由 SQLite 主日志保证。"""
     if getattr(_conn_local, "c", None) is None:
-        _conn_local.c = sqlite3.connect(DB_PATH, check_same_thread=False)
-        _conn_local.c.row_factory = sqlite3.Row
+        c = sqlite3.connect(USERS_DB_PATH, check_same_thread=False)
+        c.row_factory = sqlite3.Row
+        # ATTACH 必须在事务外（此刻刚 connect，无未决事务）；不支持参数绑定，' 需双写转义
+        c.execute("ATTACH DATABASE '%s' AS qdb" % DB_PATH.replace("'", "''"))
+        _conn_local.c = c
     return _conn_local.c
 
 def today():
@@ -90,7 +96,7 @@ def init_user_srs(uid):
     """新账号初始化：为每道题生成一条 status='new' 的进度行（数据按用户隔离）。"""
     n = q_one("SELECT COUNT(*) n FROM srs WHERE user_id=?", (uid,))["n"]
     if n == 0:
-        db().execute("INSERT INTO srs(qid,user_id,status) SELECT qid,?,'new' FROM questions", (uid,))
+        db().execute("INSERT INTO srs(qid,user_id,status) SELECT qid,?,'new' FROM qdb.questions", (uid,))
         db().commit()
     return n
 
@@ -204,8 +210,63 @@ def import_cloud(uid, data):
     _write_ns("cloud_", "uid", uid, data)
 
 
+# ---------- 拆库迁移：旧版混合 kaogong.db → 纯题库 + users.db（一次性，幂等） ----------
+USER_TABLES = ("users", "srs", "reviews", "notes", "favorites", "doubt_status", "settings",
+               "exam_history", "cloud_accounts", "cloud_meta", "cloud_srs", "cloud_reviews",
+               "cloud_notes", "cloud_favorites", "cloud_doubt_status", "cloud_exam_history")
+
+
+def ensure_split():
+    """首次以拆库版启动时自动迁移：把 kaogong.db 里的用户表搬到 users.db。
+    单事务跨 ATTACH 库（SQLite 主日志保证原子），失败整体回滚；迁移后主库 VACUUM 收缩。
+    不开 WAL——跨库原子性依赖回滚日志的 super-journal。"""
+    if os.path.exists(USERS_DB_PATH):
+        return  # 已拆分，幂等返回
+    src = sqlite3.connect(DB_PATH)
+    have = {r[0] for r in src.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    src.close()
+    if "users" not in have:
+        return  # 纯题库 + 全新用户 → ensure_tables 自建空用户库即可
+    bak = DB_PATH + ".bak-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    shutil.copy2(DB_PATH, bak)
+    print(f"[split] 备份原库 → {bak}")
+    dst = sqlite3.connect(USERS_DB_PATH)
+    dst.isolation_level = None  # 手动事务
+    dst.execute("ATTACH DATABASE '%s' AS old" % DB_PATH.replace("'", "''"))
+    try:
+        dst.execute("BEGIN")
+        for t in USER_TABLES:
+            row = dst.execute("SELECT sql FROM old.sqlite_master WHERE type='table' AND name=?",
+                              (t,)).fetchone()
+            if not row:
+                continue
+            dst.execute(row[0])  # 原样 DDL 建入 users.db
+            cols = ",".join(r[1] for r in dst.execute(f"PRAGMA old.table_info({t})"))
+            dst.execute(f"INSERT INTO main.{t}({cols}) SELECT {cols} FROM old.{t}")
+            n = dst.execute("SELECT changes()").fetchone()[0]
+            print(f"[split] {t}: {n} 行")
+        ph = ",".join("?" * len(USER_TABLES))
+        for (sql,) in dst.execute("SELECT sql FROM old.sqlite_master WHERE type='index' "
+                                  f"AND sql IS NOT NULL AND tbl_name IN ({ph})", USER_TABLES):
+            dst.execute(sql)
+        for t in USER_TABLES:
+            dst.execute(f"DROP TABLE old.{t}")
+        dst.execute("COMMIT")
+    except Exception as e:
+        dst.execute("ROLLBACK")
+        dst.close()
+        print(f"[split] 迁移失败已回滚（原库与 users.db 均未破坏）: {e}")
+        sys.exit(1)
+    dst.execute("DETACH DATABASE old")
+    dst.close()
+    v = sqlite3.connect(DB_PATH)
+    v.execute("VACUUM")  # 事务外收缩主库
+    v.close()
+    print("[split] 题库/用户库拆分完成：kaogong.db(纯题库) + users.db")
+
+
 def ensure_tables():
-    migrate_v2.ensure(db())   # v2：多用户隔离 / 错题本字段 / 超时标记（幂等）
+    migrate_v2.ensure(db())   # v2：多用户隔离 / 错题本字段 / 超时标记（幂等；含缺表兜底）
     db().executescript("""
     CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, name TEXT, created TEXT);
     CREATE TABLE IF NOT EXISTS notes(
@@ -267,7 +328,7 @@ def get_setting(key, default=None):
     return r["value"] if r else default
 
 def resolve_qid(qid_int):
-    r = q_one("SELECT qid FROM questions WHERE id=?", (qid_int,))
+    r = q_one("SELECT qid FROM qdb.questions WHERE id=?", (qid_int,))
     return r["qid"] if r else None
 
 # 练习阶段对题干/材料做答案剧透清洗，避免直接泄露正确选项字母
@@ -365,7 +426,7 @@ def clean_card(row, reveal=False, uid=DEFAULT_UID):
         ds = q_one("SELECT status,note FROM doubt_status WHERE qid=? AND user_id=?", (eqid, uid))
         d["doubt_status"] = ds["status"] if ds else ""
         d["srs_wrong"] = (q_one("SELECT wrong FROM srs WHERE qid=? AND user_id=?", (eqid, uid)) or {}).get("wrong", 0)
-    vr = q_one("SELECT * FROM review_verified WHERE qid=?", (row["qid"],))
+    vr = q_one("SELECT * FROM qdb.review_verified WHERE qid=?", (row["qid"],))
     if vr:
         # 做题阶段仅给"已复核"标记，不剧透答案；作答后(reveal)才给完整核实详情
         d["verified"] = {"status": vr["status"]} if not reveal else {
@@ -555,14 +616,14 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- GET API ----------
     def api(self, path, g):
         if path == "/api/bootstrap":
-            mods = q_all("SELECT module, COUNT(*) n FROM questions GROUP BY module ORDER BY n DESC")
-            cats = q_all("SELECT module, category, COUNT(*) n FROM questions GROUP BY module,category ORDER BY n DESC")
-            total = q_one("SELECT COUNT(*) n FROM questions")["n"]
+            mods = q_all("SELECT module, COUNT(*) n FROM qdb.questions GROUP BY module ORDER BY n DESC")
+            cats = q_all("SELECT module, category, COUNT(*) n FROM qdb.questions GROUP BY module,category ORDER BY n DESC")
+            total = q_one("SELECT COUNT(*) n FROM qdb.questions")["n"]
             return self._send(200, {"total": total, "modules": mods, "categories": cats, "today": today()})
 
         if path == "/api/stats":
             t = today(); uid = need_uid(g("token"))
-            due_new = q_one("SELECT COUNT(*) n FROM questions q JOIN srs s ON s.qid=q.qid WHERE s.user_id=? AND s.status='new'", (uid,))["n"]
+            due_new = q_one("SELECT COUNT(*) n FROM qdb.questions q JOIN srs s ON s.qid=q.qid WHERE s.user_id=? AND s.status='new'", (uid,))["n"]
             due_rev = q_one("SELECT COUNT(*) n FROM srs WHERE user_id=? AND status!='new' AND due<=?", (uid, t))["n"]
             learned = q_one("SELECT COUNT(*) n FROM srs WHERE user_id=? AND status!='new'", (uid,))["n"]
             studied_today = q_one("SELECT COUNT(DISTINCT qid) n FROM reviews WHERE user_id=? AND date(ts)=?", (uid, t))["n"]
@@ -570,9 +631,9 @@ class Handler(BaseHTTPRequestHandler):
             fav_n = q_one("SELECT COUNT(*) n FROM favorites WHERE user_id=?", (uid,))["n"]
             by_mod = q_all("""SELECT q.module m, COUNT(*) total,
                               SUM(CASE WHEN s.status!='new' THEN 1 ELSE 0 END) learned
-                              FROM questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                              FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
                               GROUP BY q.module""", (uid,))
-            due_by_mod = q_all("""SELECT q.module m, COUNT(*) n FROM srs s JOIN questions q ON q.qid=s.qid
+            due_by_mod = q_all("""SELECT q.module m, COUNT(*) n FROM srs s JOIN qdb.questions q ON q.qid=s.qid
                                   WHERE s.user_id=? AND s.status!='new' AND s.due<=? GROUP BY q.module""", (uid, t))
             mastery = q_all("SELECT interval FROM srs WHERE user_id=? AND status!='new'", (uid,))
             buckets = {"学习中": 0, "初记": 0, "短期": 0, "长期": 0, "稳固": 0}
@@ -604,49 +665,49 @@ class Handler(BaseHTTPRequestHandler):
                     rows = []
                 else:
                     ph = ",".join("?" * len(ids))
-                    rows = q_all(f"SELECT * FROM questions WHERE id IN ({ph})", ids)
+                    rows = q_all(f"SELECT * FROM qdb.questions WHERE id IN ({ph})", ids)
                     order = {int(x): i for i, x in enumerate(ids)}
                     rows.sort(key=lambda r: order.get(r["id"], 9999))
             elif mode == "material":
-                rows = q_all("SELECT * FROM questions WHERE material_ref=? ORDER BY id LIMIT ?", (ref, size))
+                rows = q_all("SELECT * FROM qdb.questions WHERE material_ref=? ORDER BY id LIMIT ?", (ref, size))
             elif mode == "fav":
-                rows = q_all(f"""SELECT q.* FROM questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                rows = q_all(f"""SELECT q.* FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
                                 WHERE q.qid IN (SELECT qid FROM favorites WHERE user_id=?){cond}{excl_clause}
                                 ORDER BY RANDOM() LIMIT ?""", (uid, uid, *ea, size))
             elif mode == "wrongredo":
                 # 错题专项重练：只抽「待重练」的错题，随机打散
-                rows = q_all(f"""SELECT q.* FROM questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                rows = q_all(f"""SELECT q.* FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
                                 WHERE s.wrong>0 AND IFNULL(s.wb_status,'active')='active'{cond}{excl_clause}
                                 ORDER BY RANDOM() LIMIT ?""", (uid, *ea, size))
             elif mode == "wrong":
-                rows = q_all(f"""SELECT q.* FROM questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                rows = q_all(f"""SELECT q.* FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
                                 WHERE s.wrong>0{cond}{excl_clause} ORDER BY s.wrong DESC, s.ease ASC LIMIT ?""",
                              (uid, *ea, size))
             elif mode == "review":
-                rows = q_all(f"""SELECT q.* FROM questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                rows = q_all(f"""SELECT q.* FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
                                 WHERE s.status!='new' AND s.due<=?{cond}{excl_clause}
                                 ORDER BY s.due ASC, s.ease ASC LIMIT ?""", (uid, today(), *ea, size))
             elif mode == "mix":
                 # 重复练习题优先：答错 > 遗忘(lapses) > 到期复习（此池不受 exclude 限制，刚做错的也能立刻重练）；
                 # 新题仅作补充，且排除近期已练过的，避免无意义重复。
-                rows = q_all(f"""SELECT q.* FROM questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                rows = q_all(f"""SELECT q.* FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
                                 WHERE 1=1{cond} AND (s.wrong>0 OR s.lapses>0 OR (s.status!='new' AND s.due<=?))
                                 ORDER BY (CASE WHEN s.wrong>0 THEN 0 WHEN s.lapses>0 THEN 1 ELSE 2 END),
                                          s.due ASC, RANDOM() LIMIT ?""", (uid, today(), *args, size))
                 if len(rows) < size:
-                    fill = q_all(f"""SELECT q.* FROM questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                    fill = q_all(f"""SELECT q.* FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
                                     WHERE 1=1{cond} AND s.status='new'{excl_clause} ORDER BY RANDOM() LIMIT ?""",
                                  (uid, *ea, size - len(rows)))
                     rows += fill
             else:  # new / study / exam
-                rows = q_all(f"""SELECT q.* FROM questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                rows = q_all(f"""SELECT q.* FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
                                 WHERE s.status='new'{cond}{excl_clause} ORDER BY RANDOM() LIMIT ?""", (uid, *ea, size))
             return self._send(200, {"mode": mode, "count": len(rows),
                                     "cards": [clean_card(r, reveal=False) for r in rows]})
 
         if path == "/api/question":
             uid = need_uid(g("token"))
-            r = q_one("SELECT * FROM questions WHERE id=?", (_int(g("id"), 0),))
+            r = q_one("SELECT * FROM qdb.questions WHERE id=?", (_int(g("id"), 0),))
             if not r:
                 return self._send(404, {"error": "no such question"})
             srs = q_one("SELECT * FROM srs WHERE qid=? AND user_id=?", (r["qid"], uid))
@@ -672,12 +733,12 @@ class Handler(BaseHTTPRequestHandler):
                 cond += " AND q.year=?"; a2.append(year); b2.append(year)
             if kw:
                 cond += " AND (q.stem LIKE ? OR q.kadian LIKE ?)"; a2 += ["%" + kw + "%"] * 2; b2 += ["%" + kw + "%"] * 2
-            total = q_one(f"""SELECT COUNT(*) n FROM questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+            total = q_one(f"""SELECT COUNT(*) n FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
                               WHERE 1=1{cond}""", (uid, *b2))["n"]
             rows = q_all(f"""SELECT q.id,q.qid,q.module,q.category,q.kadian,q.region,q.year,q.answer,q.has_image,q.ask_model,
                             s.status,s.due,s.interval,s.correct,s.wrong,s.wb_status,
                             CASE WHEN f.qid IS NOT NULL THEN 1 ELSE 0 END fav
-                            FROM questions q
+                            FROM qdb.questions q
                             JOIN srs s ON s.qid=q.qid AND s.user_id=?
                             LEFT JOIN favorites f ON f.qid=q.qid AND f.user_id=?
                             WHERE 1=1{cond}
@@ -689,14 +750,14 @@ class Handler(BaseHTTPRequestHandler):
             cond, args = build_where(g("module"), g("category"), "")
             rows = q_all(f"""SELECT q.kadian kd, q.module m, q.category c, COUNT(*) n,
                             MIN(q.mother) mother
-                            FROM questions q WHERE 1=1{cond}
+                            FROM qdb.questions q WHERE 1=1{cond}
                             GROUP BY q.kadian ORDER BY n DESC LIMIT ?""", (*args, _int(g("size"), 500)))
             return self._send(200, {"rows": rows})
 
         if path == "/api/facets":
             return self._send(200, {
-                "regions": [r["region"] for r in q_all("SELECT DISTINCT region FROM questions WHERE region!='' ORDER BY region")],
-                "years": [r["year"] for r in q_all("SELECT DISTINCT year FROM questions WHERE year!='' ORDER BY year DESC")],
+                "regions": [r["region"] for r in q_all("SELECT DISTINCT region FROM qdb.questions WHERE region!='' ORDER BY region")],
+                "years": [r["year"] for r in q_all("SELECT DISTINCT year FROM qdb.questions WHERE year!='' ORDER BY year DESC")],
             })
 
         if path == "/api/favs":
@@ -742,7 +803,7 @@ class Handler(BaseHTTPRequestHandler):
             uid = need_uid(g("token"))
             def agg(col):
                 return q_all(f"""SELECT q.{col} k, COUNT(*) n, SUM(s.correct) c, SUM(s.wrong) w
-                                FROM questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                                FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
                                 WHERE s.status!='new' GROUP BY q.{col} HAVING n>=1 ORDER BY n DESC LIMIT 40""", (uid,))
             return self._send(200, {
                 "module": agg("module"), "category": agg("category"),
@@ -753,7 +814,7 @@ class Handler(BaseHTTPRequestHandler):
             uid = need_uid(g("token"))
             rows = q_all("""SELECT q.kadian kd, q.module m, q.category cat, COUNT(*) seen,
                             SUM(s.correct) c, SUM(s.wrong) w, SUM(s.lapses) lp, MIN(s.ease) ease
-                            FROM questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                            FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
                             WHERE s.status!='new' GROUP BY q.kadian
                             HAVING seen>=1 AND (w>0 OR lp>0)
                             ORDER BY (CAST(w AS REAL)+lp)/seen DESC, ease ASC LIMIT 30""", (uid,))
@@ -766,9 +827,9 @@ class Handler(BaseHTTPRequestHandler):
             size = max(1, min(100, _int(g("size"), 50)))
             rows = q_all("""SELECT g.ref, g.n, q.id rep_id, q.material, q.kadian
                             FROM (SELECT material_ref ref, COUNT(*) n, MIN(id) rep
-                                  FROM questions WHERE module='资料分析' AND material_ref!=''
+                                  FROM qdb.questions WHERE module='资料分析' AND material_ref!=''
                                   GROUP BY material_ref HAVING n>=2) g
-                            JOIN questions q ON q.id=g.rep
+                            JOIN qdb.questions q ON q.id=g.rep
                             ORDER BY g.n DESC LIMIT ?""", (size,))
             out = []
             for r in rows:
@@ -784,11 +845,11 @@ class Handler(BaseHTTPRequestHandler):
             cond = "q.doubt!=''"; args = []
             if only == "pending":
                 cond += " AND (ds.status IS NULL OR ds.status='')"
-            total = q_one(f"""SELECT COUNT(*) n FROM questions q LEFT JOIN doubt_status ds ON ds.qid=q.qid
+            total = q_one(f"""SELECT COUNT(*) n FROM qdb.questions q LEFT JOIN doubt_status ds ON ds.qid=q.qid
                              WHERE {cond}""", args)["n"]
             rows = q_all(f"""SELECT q.id,q.qid,q.module,q.category,q.kadian,q.region,q.year,q.doubt,
                             ds.status ds_status, ds.note ds_note
-                            FROM questions q LEFT JOIN doubt_status ds ON ds.qid=q.qid
+                            FROM qdb.questions q LEFT JOIN doubt_status ds ON ds.qid=q.qid
                             WHERE {cond} ORDER BY q.module,q.category LIMIT ? OFFSET ?""",
                          args + [size, (page - 1) * size])
             return self._send(200, {"total": total, "page": page, "size": size, "rows": rows})
@@ -828,13 +889,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"total": 0, "rows": []})
             cond, args = build_where(g("module"), g("category"), "")
             like, pre = "%" + kw + "%", kw + "%"
-            total = q_one(f"""SELECT COUNT(*) n FROM questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+            total = q_one(f"""SELECT COUNT(*) n FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
                               WHERE (q.stem LIKE ? OR q.kadian LIKE ?){cond}""",
                           (uid, like, like, *args))["n"]
             rows = q_all(f"""SELECT q.id,q.qid,q.module,q.category,q.kadian,q.region,q.year,q.stem,
                                     q.answer,q.ask_model,s.wrong,s.status,
                                     (SELECT 1 FROM favorites f WHERE f.qid=q.qid AND f.user_id=?) fav
-                             FROM questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                             FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
                              WHERE (q.stem LIKE ? OR q.kadian LIKE ?){cond}
                              ORDER BY (CASE WHEN q.stem LIKE ? THEN 0 ELSE 1 END), q.id LIMIT ?""",
                          (uid, uid, like, like, *args, pre, size))
@@ -852,7 +913,7 @@ class Handler(BaseHTTPRequestHandler):
             rows = q_all("""SELECT q.id,q.qid,q.module,q.category,q.kadian,q.stem,q.options,q.answer,
                                    q.analysis,q.reasoning,q.fastest,q.pitfalls,
                                    s.wrong,s.correct,s.last_choice,s.wb_status
-                            FROM questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                            FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
                             WHERE s.wrong>0 ORDER BY q.module, s.wrong DESC, q.id""", (uid,))
             bymod = {}
             for r in rows:
@@ -889,7 +950,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/export/notes":
             uid = need_uid(g("token"))
             rows = q_all("""SELECT q.id,q.qid,q.module,q.kadian,q.stem,n.text,n.updated
-                            FROM notes n JOIN questions q ON q.qid=n.qid
+                            FROM notes n JOIN qdb.questions q ON q.qid=n.qid
                             WHERE n.user_id=? AND TRIM(IFNULL(n.text,''))!=''
                             ORDER BY q.module, n.updated DESC""", (uid,))
             bymod = {}
@@ -1203,7 +1264,13 @@ def main():
     if not os.path.exists(DB_PATH):
         print("[ERR] 数据库不存在，请先运行: python parse.py")
         sys.exit(1)
+    ensure_split()
     ensure_tables()
+    try:  # 兜底：ATTACH 缺文件会静默建空库，这里校验题库确实可读
+        q_one("SELECT COUNT(*) n FROM qdb.questions")
+    except Exception as e:
+        print(f"[ERR] 题库 kaogong.db 不可读: {e}")
+        sys.exit(1)
     print(f"[INFO] vault  = {VAULT_ROOT}")
     print(f"[INFO] images = {IMG_ROOT}  exists={os.path.isdir(IMG_ROOT)}")
     print(f"[INFO] 打开浏览器访问:  http://127.0.0.1:{PORT}")

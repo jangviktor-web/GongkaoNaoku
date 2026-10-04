@@ -182,24 +182,7 @@ def build_schema(conn):
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         mid TEXT UNIQUE, title TEXT, body TEXT, path TEXT
     );
-    -- SRS 以题号 qid(文本) 为主键：题库更新/重导入也能保留复习进度
-    CREATE TABLE IF NOT EXISTS srs(
-        qid TEXT PRIMARY KEY,
-        status TEXT DEFAULT 'new',
-        ease REAL DEFAULT 2.5,
-        interval INTEGER DEFAULT 0,
-        repetitions INTEGER DEFAULT 0,
-        lapses INTEGER DEFAULT 0,
-        due TEXT,
-        last_review TEXT,
-        correct INTEGER DEFAULT 0,
-        wrong INTEGER DEFAULT 0
-    );
-    CREATE TABLE IF NOT EXISTS reviews(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        qid TEXT, grade INT, ts TEXT,
-        interval_before INT, interval_after INT, ease REAL
-    );
+    -- 用户表（srs/reviews 等）已拆分到 users.db，由 server.py 启动时自建，本脚本只产纯题库
     """)
     conn.commit()
 
@@ -211,7 +194,6 @@ def main():
     build_schema(conn)
     cur = conn.cursor()
 
-    today = datetime.date.today().isoformat()
     files = []
     for root, _, names in os.walk(Q_DIR):
         for n in names:
@@ -308,14 +290,6 @@ def main():
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
     conn.commit()
 
-    # 调和 SRS：以 qid 文本为键，保留已有复习进度，只为新题补 new 记录，删除已消失题
-    cur.execute("DELETE FROM srs WHERE qid NOT IN (SELECT qid FROM questions);")
-    cur.execute("""INSERT OR IGNORE INTO srs(qid,status,ease,interval,repetitions,lapses,due,correct,wrong)
-        SELECT qid,'new',2.5,0,0,0,?,0,0 FROM questions""", (today,))
-    if FRESH:
-        cur.execute("DELETE FROM reviews;")
-    conn.commit()
-
     total = cur.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
     noans = cur.execute("SELECT COUNT(*) FROM questions WHERE answer=''").fetchone()[0]
     print(f"[OK] 导入完成: {total} 题  (跳过 {n_skip})，无答案 {noans}，用时 {time.time()-t0:.1f}s")
@@ -323,12 +297,16 @@ def main():
     cur.executescript("""
         CREATE INDEX IF NOT EXISTS ix_mod ON questions(module,category);
         CREATE INDEX IF NOT EXISTS ix_kd ON questions(kadian);
-        CREATE INDEX IF NOT EXISTS ix_due ON srs(due,status);
-        CREATE INDEX IF NOT EXISTS ix_ans ON srs(qid);
+    """)
+    # 兼容存量旧库：清掉拆分前混入的用户表，产出纯题库
+    cur.executescript("""
+        DROP TABLE IF EXISTS srs;
+        DROP TABLE IF EXISTS reviews;
     """)
     conn.commit()
+    conn.execute("VACUUM")
     conn.close()
-    print("[FILE] 数据库:", DB_PATH)
+    print("[FILE] 数据库(纯题库):", DB_PATH)
 
 if __name__ == "__main__":
     main()

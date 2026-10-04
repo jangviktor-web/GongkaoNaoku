@@ -24,12 +24,44 @@ def ensure(c):
     c.row_factory = sqlite3.Row
 
     # ---------- users ----------
+    # username/pw_hash/token 三列历史上只存在于手动演进的旧库、无 DDL，全新部署会崩，此处补全
     c.executescript("""
     CREATE TABLE IF NOT EXISTS users(
         id TEXT PRIMARY KEY,
         name TEXT,
-        created TEXT
+        created TEXT,
+        username TEXT UNIQUE,
+        pw_hash TEXT,
+        token TEXT
     );
+    """)
+
+    # ---------- 缺表兜底：拆库后 parse.py 只产纯题库，用户表可能整张不存在 ----------
+    # 按目标 v2 结构补建空表（IF NOT EXISTS 对 v1/v2 既有表均无副作用），
+    # 保证下方"v1→v2 升级"分支只在表真实存在时触发。
+    c.executescript("""
+    CREATE TABLE IF NOT EXISTS srs(
+        qid TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT 'u1',
+        status TEXT DEFAULT 'new', ease REAL DEFAULT 2.5, interval INTEGER DEFAULT 0,
+        repetitions INTEGER DEFAULT 0, lapses INTEGER DEFAULT 0, due TEXT, last_review TEXT,
+        correct INTEGER DEFAULT 0, wrong INTEGER DEFAULT 0, wb_status TEXT DEFAULT 'active',
+        wb_streak INTEGER DEFAULT 0, last_choice TEXT, PRIMARY KEY(qid, user_id));
+    CREATE TABLE IF NOT EXISTS reviews(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, qid TEXT, user_id TEXT NOT NULL DEFAULT 'u1',
+        grade INT, ts TEXT, interval_before INT, interval_after INT, ease REAL,
+        timeout INTEGER DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS notes(
+        qid TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT 'u1', text TEXT, updated TEXT,
+        PRIMARY KEY(qid, user_id));
+    CREATE TABLE IF NOT EXISTS favorites(
+        qid TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT 'u1', added TEXT,
+        PRIMARY KEY(qid, user_id));
+    CREATE TABLE IF NOT EXISTS doubt_status(
+        qid TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT 'u1',
+        status TEXT, note TEXT, updated TEXT, PRIMARY KEY(qid, user_id));
+    CREATE TABLE IF NOT EXISTS exam_history(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, total INT, correct INT,
+        score REAL, duration INT, ts TEXT, user_id TEXT NOT NULL DEFAULT 'u1');
     """)
 
     # ---------- srs：重建为 (qid,user_id) 复合主键 ----------

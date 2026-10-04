@@ -1,3 +1,6 @@
+# 用户库 users.db 由 server 首次启动自动生成，不入库（备份只需拷这个文件）
+users.db
+
 # ---------- 数据库备份与运行时快照（分卷 kaogong.db.part-* 入库；克隆后用 assemble_db.py 合并） ----------
 *.db.bak*
 *.sqlite
