@@ -43,6 +43,13 @@ def q_one(sql, args=()):
     r = db().execute(sql, args).fetchone()
     return dict(r) if r else None
 
+def _int(v, d):
+    """query 参数安全取整：非数字/空 → 默认值（防 ?size=abc 直接 500）"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return d
+
 def q_all(sql, args=()):
     return [dict(r) for r in db().execute(sql, args).fetchall()]
 
@@ -581,7 +588,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/next":
             mode = g("mode", "mix")
-            size = max(1, min(60, int(g("size", "10") or 10)))
+            size = max(1, min(60, _int(g("size"), 10)))
             uid = need_uid(g("token"))
             cond, args = build_where(g("module"), g("category"), g("kadian"))
             ref = g("ref")
@@ -639,14 +646,14 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/question":
             uid = need_uid(g("token"))
-            r = q_one("SELECT * FROM questions WHERE id=?", (int(g("id", "0")),))
+            r = q_one("SELECT * FROM questions WHERE id=?", (_int(g("id"), 0),))
             if not r:
                 return self._send(404, {"error": "no such question"})
             srs = q_one("SELECT * FROM srs WHERE qid=? AND user_id=?", (r["qid"], uid))
             return self._send(200, {"card": clean_card(r, reveal=True, uid=uid), "srs": srs})
 
         if path == "/api/browse":
-            page = max(1, int(g("page", "1") or 1)); size = max(1, min(100, int(g("size", "25") or 25)))
+            page = max(1, _int(g("page"), 1)); size = max(1, min(100, _int(g("size"), 25)))
             uid = need_uid(g("token"))
             cond, args = build_where(g("module"), g("category"), g("kadian"))
             region = g("region"); year = g("year"); kw = g("q")
@@ -683,7 +690,7 @@ class Handler(BaseHTTPRequestHandler):
             rows = q_all(f"""SELECT q.kadian kd, q.module m, q.category c, COUNT(*) n,
                             MIN(q.mother) mother
                             FROM questions q WHERE 1=1{cond}
-                            GROUP BY q.kadian ORDER BY n DESC LIMIT ?""", (*args, int(g("size", "500") or 500)))
+                            GROUP BY q.kadian ORDER BY n DESC LIMIT ?""", (*args, _int(g("size"), 500)))
             return self._send(200, {"rows": rows})
 
         if path == "/api/facets":
@@ -698,7 +705,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ids": ids})
 
         if path == "/api/heatmap":
-            days = max(30, min(365, int(g("days", "120") or 120)))
+            days = max(30, min(365, _int(g("days"), 120)))
             uid = need_uid(g("token"))
             rows = q_all("""SELECT date(ts) d, COUNT(*) n FROM reviews WHERE user_id=?
                             GROUP BY date(ts) ORDER BY d DESC LIMIT ?""", (uid, days))
@@ -756,7 +763,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"rows": rows})
 
         if path == "/api/materials":
-            size = max(1, min(100, int(g("size", "50") or 50)))
+            size = max(1, min(100, _int(g("size"), 50)))
             rows = q_all("""SELECT g.ref, g.n, q.id rep_id, q.material, q.kadian
                             FROM (SELECT material_ref ref, COUNT(*) n, MIN(id) rep
                                   FROM questions WHERE module='资料分析' AND material_ref!=''
@@ -772,7 +779,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"rows": out})
 
         if path == "/api/doubts":
-            page = max(1, int(g("page", "1") or 1)); size = max(1, min(50, int(g("size", "20") or 20)))
+            page = max(1, _int(g("page"), 1)); size = max(1, min(50, _int(g("size"), 20)))
             only = g("only")  # pending
             cond = "q.doubt!=''"; args = []
             if only == "pending":
@@ -816,7 +823,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/search":
             uid = need_uid(g("token"))
             kw = (g("q") or "").strip()
-            size = max(1, min(60, int(g("size", "30") or 30)))
+            size = max(1, min(60, _int(g("size"), 30)))
             if not kw:
                 return self._send(200, {"total": 0, "rows": []})
             cond, args = build_where(g("module"), g("category"), "")
