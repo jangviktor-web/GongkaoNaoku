@@ -4,7 +4,7 @@
    旧版页面被浏览器 / CDN 边缘节点用 max-age=86400 强缓存，导致"改了代码但打开还是旧界面"。
    这里让脚本核对页面里的版本标记：不一致就一次性跳到带版本号的新地址，
    绕过浏览器与边缘节点的两层缓存。kg_healed 防止极端情况下死循环。 */
-const APP_VER = '20261001d';
+const APP_VER = '20261004a';
 let HEALING = false;
 (function selfHeal() {
   try {
@@ -100,7 +100,8 @@ function saveSession() {
     const S = state.session; if (!S || !S.queue || !S.queue.length) return;
     localStorage.setItem(SS_KEY, JSON.stringify({
       mode: S.mode, cfg: S.cfg, queue: S.queue, idx: S.idx,
-      tally: S.tally, kind: 'study', savedAt: Date.now(),
+      tally: S.tally, marked: Array.from(S.marked || []),
+      kind: 'study', savedAt: Date.now(),
     }));
   } catch (e) { /* localStorage 不可用（隐私模式等）时静默降级 */ }
 }
@@ -129,12 +130,27 @@ function clearSession() { try { localStorage.removeItem(SS_KEY); } catch (e) { }
 function resumeSession() {
   const o = loadSession();
   if (!o) { clearSession(); return; }
+  // 修复「继续上次刷题」按了没反应：恢复路径必须补齐 session 全部字段，
+  // 否则 renderCard 里 S.marked.has() / S.times.push() 抛 TypeError，页面停在原地。
   state.session = {
-    mode: o.mode, cfg: o.cfg, queue: o.queue, idx: o.idx,
+    mode: o.mode, cfg: o.cfg || {}, queue: o.queue, idx: o.idx,
     phase: 'question', chosen: null, full: null,
     tally: o.tally || { done: 0, right: 0, wrong: 0 },
+    marked: new Set(o.marked || []),
+    limitOn: !!(o.cfg && o.cfg.limitOn),
+    limits: (o.cfg && o.cfg.limits) || loadLimits(),
+    ids: (o.cfg && o.cfg.ids) || null,
+    startTs: Date.now(), times: [], timeoutN: 0, qStart: Date.now(),
   };
-  renderCard();
+  try {
+    renderCard();
+  } catch (e) {
+    // 快照损坏 / 结构不兼容：清理后回总览，保证按钮永远不会「没反应」
+    console.error('恢复练习失败，已清理本地快照', e);
+    state.session = null;
+    clearSession();
+    try { viewDashboard(); } catch (e2) { location.hash = '#/'; }
+  }
 }
 function resumeAgo(ts) {
   if (!ts) return '—';
@@ -199,7 +215,7 @@ async function viewDashboard() {
       const left = o.queue.length - o.idx;
       const label = MODE_LABEL[o.mode] || '练习';
       const t = resumeAgo(o.savedAt);
-      return `<a class="btn big resume" href="#" onclick="resumeSession();return false;">⏯ 继续上次刷题（${label} · 剩 ${left} 题）· 上次 ${t}</a>`;
+      return `<a class="btn big resume" href="#" onclick="try{resumeSession()}catch(e){console.error(e)};return false;">⏯ 继续上次刷题（${label} · 剩 ${left} 题）· 上次 ${t}</a>`;
     } catch (e) { return ''; }
   })();
   const dueMod = {}; s.due_by_module.forEach(d => dueMod[d.m] = d.n);
