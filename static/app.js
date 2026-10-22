@@ -4,7 +4,7 @@
    旧版页面被浏览器 / CDN 边缘节点用 max-age=86400 强缓存，导致"改了代码但打开还是旧界面"。
    这里让脚本核对页面里的版本标记：不一致就一次性跳到带版本号的新地址，
    绕过浏览器与边缘节点的两层缓存。kg_healed 防止极端情况下死循环。 */
-const APP_VER = '20261005a';
+const APP_VER = '20261022a';
 let HEALING = false;
 (function selfHeal() {
   try {

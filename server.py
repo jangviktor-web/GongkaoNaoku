@@ -25,19 +25,66 @@ STATIC = os.path.join(HERE, "static")
 PORT = int(os.environ.get("PORT") or os.environ.get("KAOGONG_PORT") or "8300")
 mimetypes.add_type("image/webp", ".webp")
 
-_LOCK = threading.Lock()
-_conn_local = threading.local()
+_Q_TOTAL = None               # 题库总题数缓存
+_LOCK = threading.RLock()      # 进程内写串行：绝不让两条连接同时写 users.db
+_conn_local = threading.local()  # 当前请求借到的那条连接
+
+def _new_conn():
+    # timeout / busy_timeout 都放到 30s：外部（备份、sqlite3 命令行、另一实例）短暂占锁时
+    # 宁可等一等，也不要把 "database is locked" 直接甩给用户
+    c = sqlite3.connect(USERS_DB_PATH, timeout=30, check_same_thread=False)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA busy_timeout=30000")
+    # ATTACH 必须在事务外（此刻刚 connect，无未决事务）；不支持参数绑定，' 需双写转义
+    c.execute("ATTACH DATABASE '%s' AS qdb" % DB_PATH.replace("'", "''"))
+    return c
+
+class _Conn:
+    """一条连接的生命周期：借出 → 用 → 关掉。
+    用一条新建、用完即关，换来两件事：线程之间绝不共用同一条 SQLite 连接
+    （之前所有线程共用一条，交叉提交/读未提交事务正是 locked 的放大器），
+    且任何异常都不会把半截事务留在进程里把库锁死。"""
+    def __enter__(self):
+        self._c = _new_conn()
+        _conn_local.c = self._c   # 临时借用也挂到线程上：db() 后续取用不会拿到已关闭的连接
+        return self._c
+    def __exit__(self, et, ev, tb):
+        c, self._c = self._c, None
+        if c is None:
+            return False
+        try:
+            if c.in_transaction:
+                c.rollback()
+        finally:
+            c.close()
+        if getattr(_conn_local, "c", None) is c:
+            _conn_local.c = None
+        return False
 
 def db():
     """主连接 = 用户库 users.db；题库 kaogong.db 以别名 qdb ATTACH 进来。
     题库表一律写 qdb.questions 等带前缀引用；跨库 JOIN/事务由 SQLite 主日志保证。"""
-    if getattr(_conn_local, "c", None) is None:
-        c = sqlite3.connect(USERS_DB_PATH, check_same_thread=False)
-        c.row_factory = sqlite3.Row
-        # ATTACH 必须在事务外（此刻刚 connect，无未决事务）；不支持参数绑定，' 需双写转义
-        c.execute("ATTACH DATABASE '%s' AS qdb" % DB_PATH.replace("'", "''"))
-        _conn_local.c = c
-    return _conn_local.c
+    t = getattr(_conn_local, "c", None)
+    if t is None:   # 未显式借用（启动校验等）→ 临时一条，语句级自动提交
+        with _Conn() as c:
+            return c
+    return t
+
+def borrow():
+    """一个请求内复用同一条连接（含事务）。"""
+    ctx = _Conn()
+    _conn_local.c = ctx.__enter__()
+    return ctx
+
+def unborrow():
+    c = getattr(_conn_local, "c", None)
+    if c is not None:
+        _conn_local.c = None
+        try:
+            if c.in_transaction:
+                c.rollback()
+        finally:
+            c.close()
 
 def today():
     return datetime.date.today().isoformat()
@@ -93,12 +140,44 @@ def ensure_user(uid):
 
 
 def init_user_srs(uid):
-    """新账号初始化：为每道题生成一条 status='new' 的进度行（数据按用户隔离）。"""
-    n = q_one("SELECT COUNT(*) n FROM srs WHERE user_id=?", (uid,))["n"]
-    if n == 0:
-        db().execute("INSERT INTO srs(qid,user_id,status) SELECT qid,?,'new' FROM qdb.questions", (uid,))
-        db().commit()
-    return n
+    """新账号初始化。
+    只建账号行、不预铺 2.7 万行空白进度：以前注册要写满全库题量，
+    在 180 万行的 users.db 上要一两秒且长时间占写锁 —— 既慢又是 locked 的温床。
+    现在进度按需生成：取题时 auto_create=1 会给抽到的题建行，
+    统计「新题剩余」用总数减已学，不再依赖预铺行。"""
+    return 0
+
+
+def ensure_srs_rows(uid, qids):
+    """给指定题补齐空白进度行（已存在的跳过）。抽题/看详情时按需调用，
+    一条语句完成、耗时毫秒级，取代过去注册时一次性铺 2.7 万行。"""
+    qids = [q for q in (qids or []) if q]
+    if not qids:
+        return
+    vals = ",".join("(?,?,?)" for _ in qids)
+    args = []
+    for q in qids:
+        args += [q, uid, "new"]
+    with _LOCK:
+        try:
+            db().execute("INSERT OR IGNORE INTO srs(qid,user_id,status) VALUES " + vals, args)
+            db().commit()
+        except Exception:
+            db().rollback()
+            raise
+
+
+def learned_qids(uid):
+    """该账号已接触过的 qid 集合（有进度行即算）。"""
+    return {r["qid"] for r in q_all("SELECT qid FROM srs WHERE user_id=?", (uid,))}
+
+
+def q_total():
+    """题库总题数（进程内缓存，题库是只读的）。"""
+    global _Q_TOTAL
+    if _Q_TOTAL is None:
+        _Q_TOTAL = q_one("SELECT COUNT(*) n FROM qdb.questions")["n"]
+    return _Q_TOTAL
 
 
 # ============ 云端账号：密码哈希 / token 鉴权 ============
@@ -151,6 +230,7 @@ def _write_ns(prefix, uid_col, uid, data):
     if not isinstance(data, dict):
         return
     with _LOCK:
+        # 一次性长事务（原来逐表 commit，中途失败会留下半截数据）
         # srs：保留 qid 维度，按账号覆盖
         db().execute(f"DELETE FROM {prefix}srs WHERE {uid_col}=?", (uid,))
         for r in (data.get("srs") or []):
@@ -222,7 +302,7 @@ def ensure_split():
     不开 WAL——跨库原子性依赖回滚日志的 super-journal。"""
     if os.path.exists(USERS_DB_PATH):
         return  # 已拆分，幂等返回
-    src = sqlite3.connect(DB_PATH)
+    src = sqlite3.connect(DB_PATH, timeout=30)
     have = {r[0] for r in src.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     src.close()
     if "users" not in have:
@@ -230,7 +310,7 @@ def ensure_split():
     bak = DB_PATH + ".bak-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     shutil.copy2(DB_PATH, bak)
     print(f"[split] 备份原库 → {bak}")
-    dst = sqlite3.connect(USERS_DB_PATH)
+    dst = sqlite3.connect(USERS_DB_PATH, timeout=30)
     dst.isolation_level = None  # 手动事务
     dst.execute("ATTACH DATABASE '%s' AS old" % DB_PATH.replace("'", "''"))
     try:
@@ -259,10 +339,19 @@ def ensure_split():
         sys.exit(1)
     dst.execute("DETACH DATABASE old")
     dst.close()
-    v = sqlite3.connect(DB_PATH)
+    v = sqlite3.connect(DB_PATH, timeout=30)
     v.execute("VACUUM")  # 事务外收缩主库
     v.close()
     print("[split] 题库/用户库拆分完成：kaogong.db(纯题库) + users.db")
+
+
+def _warm():
+    """启动预热：把首页要用的统计和整份 qid 列表先读一遍，让 OS 页缓存兜住冷读。"""
+    try:
+        q_all("SELECT qid FROM qdb.questions")
+        q_all("SELECT module, COUNT(*) n FROM qdb.questions GROUP BY module")
+    except Exception as e:
+        print("[WARN] 预热失败（不影响服务）:", e)
 
 
 def ensure_tables():
@@ -580,6 +669,7 @@ class Handler(BaseHTTPRequestHandler):
                 fp = os.path.join(IMG_ROOT, "__missing__.webp")
             return self._file(fp, cache=True, max_age=2592000)  # 图片内容不变，长缓存省回源
         if path.startswith("/api/"):
+            borrow()   # 本请求独占一条连接（多线程不再共用，杜绝 database is locked）
             try:
                 return self.api(path, g)
             except Unauthorized:
@@ -587,6 +677,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 import traceback; traceback.print_exc()
                 return self._send(500, {"error": str(e)})
+            finally:
+                unborrow()
         return self._send(404, {"error": "no route"})
 
     def do_POST(self):
@@ -618,6 +710,7 @@ class Handler(BaseHTTPRequestHandler):
         }
         fn = routes.get(path)
         if fn:
+            borrow()   # 同上：注册/登录/游客等写操作各用各的连接
             try:
                 return fn(payload)
             except Unauthorized:
@@ -625,6 +718,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 import traceback; traceback.print_exc()
                 return self._send(500, {"error": str(e)})
+            finally:
+                unborrow()
         return self._send(404, {"error": "no route"})
 
     def do_OPTIONS(self):
@@ -646,15 +741,16 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/stats":
             t = today(); uid = need_uid(g("token"))
-            due_new = q_one("SELECT COUNT(*) n FROM qdb.questions q JOIN srs s ON s.qid=q.qid WHERE s.user_id=? AND s.status='new'", (uid,))["n"]
-            due_rev = q_one("SELECT COUNT(*) n FROM srs WHERE user_id=? AND status!='new' AND due<=?", (uid, t))["n"]
             learned = q_one("SELECT COUNT(*) n FROM srs WHERE user_id=? AND status!='new'", (uid,))["n"]
+            total_q = q_total()
+            due_new = max(0, total_q - learned)   # 没进度行的题都算新题，不必预铺行
+            due_rev = q_one("SELECT COUNT(*) n FROM srs WHERE user_id=? AND status!='new' AND due<=?", (uid, t))["n"]
             studied_today = q_one("SELECT COUNT(DISTINCT qid) n FROM reviews WHERE user_id=? AND date(ts)=?", (uid, t))["n"]
             wrong_n = q_one("SELECT COUNT(*) n FROM srs WHERE user_id=? AND wrong>0", (uid,))["n"]
             fav_n = q_one("SELECT COUNT(*) n FROM favorites WHERE user_id=?", (uid,))["n"]
             by_mod = q_all("""SELECT q.module m, COUNT(*) total,
-                              SUM(CASE WHEN s.status!='new' THEN 1 ELSE 0 END) learned
-                              FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                              SUM(CASE WHEN s.qid IS NOT NULL AND s.status!='new' THEN 1 ELSE 0 END) learned
+                              FROM qdb.questions q LEFT JOIN srs s ON s.qid=q.qid AND s.user_id=?
                               GROUP BY q.module""", (uid,))
             due_by_mod = q_all("""SELECT q.module m, COUNT(*) n FROM srs s JOIN qdb.questions q ON q.qid=s.qid
                                   WHERE s.user_id=? AND s.status!='new' AND s.due<=? GROUP BY q.module""", (uid, t))
@@ -667,7 +763,7 @@ class Handler(BaseHTTPRequestHandler):
                 "studied_today": studied_today, "by_module": by_mod,
                 "due_by_module": due_by_mod, "mastery": buckets,
                 "wrong": wrong_n, "fav": fav_n,
-                "total": sum(buckets.values()) + due_new,
+                "total": total_q,
             })
 
         if path == "/api/next":
@@ -679,8 +775,12 @@ class Handler(BaseHTTPRequestHandler):
             # 跨次去重：排除近期已练习过的 qid（由前端传入，限额 500，仅作用于新题补充分支）
             excl = g("exclude", "")
             excl_ids = [x for x in excl.split(",") if re.fullmatch(r"\d+", x.strip())][:500] if excl else []
-            excl_clause = (" AND q.qid NOT IN (" + ",".join("?" * len(excl_ids)) + ")") if excl_ids else ""
             ea = args + excl_ids
+            # 进度行按需生成：LEFT JOIN 让没有进度行的题也视为「新题」，
+            # 不再依赖注册时预铺 2.7 万行空白记录（那是注册慢 + 写锁长的根源）
+            J = "FROM qdb.questions q LEFT JOIN srs s ON s.qid=q.qid AND s.user_id=?"
+            NEW = "(s.qid IS NULL OR s.status='new')"
+            excl_clause = (f" AND q.qid NOT IN ({','.join('?' * len(excl_ids))})") if excl_ids else ""
             if mode == "ids":
                 # 按指定 id 取题（临时标记题复盘），保持传入顺序
                 ids = [int(x) for x in g("ids", "").split(",") if re.fullmatch(r"\d+", x.strip())][:200]
@@ -694,37 +794,39 @@ class Handler(BaseHTTPRequestHandler):
             elif mode == "material":
                 rows = q_all("SELECT * FROM qdb.questions WHERE material_ref=? ORDER BY id LIMIT ?", (ref, size))
             elif mode == "fav":
-                rows = q_all(f"""SELECT q.* FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                rows = q_all(f"""SELECT q.* {J}
                                 WHERE q.qid IN (SELECT qid FROM favorites WHERE user_id=?){cond}{excl_clause}
                                 ORDER BY RANDOM() LIMIT ?""", (uid, uid, *ea, size))
             elif mode == "wrongredo":
                 # 错题专项重练：只抽「待重练」的错题，随机打散
-                rows = q_all(f"""SELECT q.* FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                rows = q_all(f"""SELECT q.* {J}
                                 WHERE s.wrong>0 AND IFNULL(s.wb_status,'active')='active'{cond}{excl_clause}
                                 ORDER BY RANDOM() LIMIT ?""", (uid, *ea, size))
             elif mode == "wrong":
-                rows = q_all(f"""SELECT q.* FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                rows = q_all(f"""SELECT q.* {J}
                                 WHERE s.wrong>0{cond}{excl_clause} ORDER BY s.wrong DESC, s.ease ASC LIMIT ?""",
                              (uid, *ea, size))
             elif mode == "review":
-                rows = q_all(f"""SELECT q.* FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                rows = q_all(f"""SELECT q.* {J}
                                 WHERE s.status!='new' AND s.due<=?{cond}{excl_clause}
                                 ORDER BY s.due ASC, s.ease ASC LIMIT ?""", (uid, today(), *ea, size))
             elif mode == "mix":
                 # 重复练习题优先：答错 > 遗忘(lapses) > 到期复习（此池不受 exclude 限制，刚做错的也能立刻重练）；
                 # 新题仅作补充，且排除近期已练过的，避免无意义重复。
-                rows = q_all(f"""SELECT q.* FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                rows = q_all(f"""SELECT q.* {J}
                                 WHERE 1=1{cond} AND (s.wrong>0 OR s.lapses>0 OR (s.status!='new' AND s.due<=?))
                                 ORDER BY (CASE WHEN s.wrong>0 THEN 0 WHEN s.lapses>0 THEN 1 ELSE 2 END),
                                          s.due ASC, RANDOM() LIMIT ?""", (uid, today(), *args, size))
                 if len(rows) < size:
-                    fill = q_all(f"""SELECT q.* FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
-                                    WHERE 1=1{cond} AND s.status='new'{excl_clause} ORDER BY RANDOM() LIMIT ?""",
+                    fill = q_all(f"""SELECT q.* {J}
+                                    WHERE 1=1{cond} AND {NEW}{excl_clause} ORDER BY RANDOM() LIMIT ?""",
                                  (uid, *ea, size - len(rows)))
                     rows += fill
             else:  # new / study / exam
-                rows = q_all(f"""SELECT q.* FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
-                                WHERE s.status='new'{cond}{excl_clause} ORDER BY RANDOM() LIMIT ?""", (uid, *ea, size))
+                rows = q_all(f"""SELECT q.* {J}
+                                WHERE {NEW}{cond}{excl_clause} ORDER BY RANDOM() LIMIT ?""", (uid, *ea, size))
+            if rows:
+                ensure_srs_rows(uid, [r["qid"] for r in rows])   # 抽到的题补齐进度行（一次事务）
             return self._send(200, {"mode": mode, "count": len(rows),
                                     "cards": [clean_card(r, reveal=False) for r in rows]})
 
@@ -734,6 +836,9 @@ class Handler(BaseHTTPRequestHandler):
             if not r:
                 return self._send(404, {"error": "no such question"})
             srs = q_one("SELECT * FROM srs WHERE qid=? AND user_id=?", (r["qid"], uid))
+            if not srs:   # 按需生成：直接看某题也补一条空白进度，详情页/收藏才能正常标状态
+                ensure_srs_rows(uid, [r["qid"]])
+                srs = q_one("SELECT * FROM srs WHERE qid=? AND user_id=?", (r["qid"], uid))
             return self._send(200, {"card": clean_card(r, reveal=True, uid=uid), "srs": srs})
 
         if path == "/api/browse":
@@ -756,13 +861,16 @@ class Handler(BaseHTTPRequestHandler):
                 cond += " AND q.year=?"; a2.append(year); b2.append(year)
             if kw:
                 cond += " AND (q.stem LIKE ? OR q.kadian LIKE ?)"; a2 += ["%" + kw + "%"] * 2; b2 += ["%" + kw + "%"] * 2
-            total = q_one(f"""SELECT COUNT(*) n FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+            # LEFT JOIN：没进度行的题也列出（空白进度 = 新题），不再依赖预铺行
+            total = q_one(f"""SELECT COUNT(*) n FROM qdb.questions q LEFT JOIN srs s ON s.qid=q.qid AND s.user_id=?
                               WHERE 1=1{cond}""", (uid, *b2))["n"]
             rows = q_all(f"""SELECT q.id,q.qid,q.module,q.category,q.kadian,q.region,q.year,q.answer,q.has_image,q.ask_model,
-                            s.status,s.due,s.interval,s.correct,s.wrong,s.wb_status,
+                            IFNULL(s.status,'new') status,s.due,s.interval,
+                            IFNULL(s.correct,0) correct,IFNULL(s.wrong,0) wrong,
+                            IFNULL(s.wb_status,'active') wb_status,
                             CASE WHEN f.qid IS NOT NULL THEN 1 ELSE 0 END fav
                             FROM qdb.questions q
-                            JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                            LEFT JOIN srs s ON s.qid=q.qid AND s.user_id=?
                             LEFT JOIN favorites f ON f.qid=q.qid AND f.user_id=?
                             WHERE 1=1{cond}
                             ORDER BY q.module,q.category,q.year DESC LIMIT ? OFFSET ?""",
@@ -912,13 +1020,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"total": 0, "rows": []})
             cond, args = build_where(g("module"), g("category"), "")
             like, pre = "%" + kw + "%", kw + "%"
-            total = q_one(f"""SELECT COUNT(*) n FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+            total = q_one(f"""SELECT COUNT(*) n FROM qdb.questions q LEFT JOIN srs s ON s.qid=q.qid AND s.user_id=?
                               WHERE (q.stem LIKE ? OR q.kadian LIKE ?){cond}""",
                           (uid, like, like, *args))["n"]
             rows = q_all(f"""SELECT q.id,q.qid,q.module,q.category,q.kadian,q.region,q.year,q.stem,
-                                    q.answer,q.ask_model,s.wrong,s.status,
+                                    q.answer,q.ask_model,s.wrong,IFNULL(s.status,'new') status,
                                     (SELECT 1 FROM favorites f WHERE f.qid=q.qid AND f.user_id=?) fav
-                             FROM qdb.questions q JOIN srs s ON s.qid=q.qid AND s.user_id=?
+                             FROM qdb.questions q LEFT JOIN srs s ON s.qid=q.qid AND s.user_id=?
                              WHERE (q.stem LIKE ? OR q.kadian LIKE ?){cond}
                              ORDER BY (CASE WHEN q.stem LIKE ? THEN 0 ELSE 1 END), q.id LIMIT ?""",
                          (uid, uid, like, like, *args, pre, size))
@@ -1035,8 +1143,9 @@ class Handler(BaseHTTPRequestHandler):
         if not eqid:
             return self._send(404, {"error": "no such question"})
         st = q_one("SELECT * FROM srs WHERE qid=? AND user_id=?", (eqid, uid))
-        if not st:
-            return self._send(404, {"error": "no srs row"})
+        if not st:   # 按需生成：极端情况下（旧缓存页面、外部写入）也能正常评分
+            ensure_srs_rows(uid, [eqid])
+            st = q_one("SELECT * FROM srs WHERE qid=? AND user_id=?", (eqid, uid))
         with _LOCK:
             new = self._apply_grade(eqid, grade, uid, timeout, choice)
             db().commit()
@@ -1063,6 +1172,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, {"error": "no question"})
         uid = need_uid(p.get("token"))
         on = bool(p.get("on"))
+        ensure_srs_rows(uid, [eqid])   # 没进度行就补一条，保证后续评分/错题本可用
         with _LOCK:
             if on:
                 db().execute("INSERT OR IGNORE INTO favorites(qid,user_id,added) VALUES(?,?,?)", (eqid, uid, now()))
@@ -1100,9 +1210,10 @@ class Handler(BaseHTTPRequestHandler):
         duration = int(p.get("duration") or 0)
         uid = need_uid(p.get("token"))
         total = len(items); correct = 0
+        eqids = [resolve_qid(int(it.get("id", 0) or 0)) for it in items]
+        ensure_srs_rows(uid, [q for q in eqids if q])   # 交卷前统一补行（一次写）
         with _LOCK:
-            for it in items:
-                eqid = resolve_qid(int(it.get("id", 0)))
+            for it, eqid in zip(items, eqids):
                 if not eqid:
                     continue
                 ok = bool(it.get("correct"))
@@ -1124,9 +1235,12 @@ class Handler(BaseHTTPRequestHandler):
     def _issue(self, uid):
         """签发新 token 并返回账号公开信息。"""
         tok = new_token()
-        with _LOCK:
+        try:
             db().execute("UPDATE users SET token=? WHERE id=?", (tok, uid))
             db().commit()
+        except Exception:
+            db().rollback()
+            raise
         r = q_one("SELECT id,name,username,anon FROM users WHERE id=?", (uid,))
         return {"ok": True, "token": tok, "user": {"id": r["id"], "name": r["name"], "username": r["username"], "anon": bool(r["anon"])}}
 
@@ -1144,10 +1258,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": "该用户名已被注册，换一个试试"})
         uid = self._new_uid()
         with _LOCK:
-            db().execute("INSERT INTO users(id,name,username,pw_hash,token,created) VALUES(?,?,?,?,?,?)",
-                         (uid, name or username, username, pw_hash(pw), "", now()))
-            init_user_srs(uid)      # 新账号初始化一套空白进度
-            db().commit()
+            try:
+                db().execute("INSERT INTO users(id,name,username,pw_hash,token,created) VALUES(?,?,?,?,?,?)",
+                             (uid, name or username, username, pw_hash(pw), "", now()))
+                init_user_srs(uid)      # 新账号初始化一套空白进度
+                db().commit()
+            except Exception:
+                db().rollback()     # 失败整体回滚，不留半截账号
+                raise
         return self._send(200, self._issue(uid))
 
     def api_auth_login(self, p):
@@ -1188,10 +1306,14 @@ class Handler(BaseHTTPRequestHandler):
             suffix = ''.join(secrets.choice("0123456789") for _ in range(4))
             username = "游客" + suffix
         with _LOCK:
-            db().execute("INSERT INTO users(id,name,username,pw_hash,token,created,anon) VALUES(?,?,?,?,?,?,1)",
-                         (uid, username, username, None, "", now()))
-            init_user_srs(uid)
-            db().commit()
+            try:
+                db().execute("INSERT INTO users(id,name,username,pw_hash,token,created,anon) VALUES(?,?,?,?,?,?,1)",
+                             (uid, username, username, None, "", now()))
+                init_user_srs(uid)
+                db().commit()
+            except Exception:
+                db().rollback()
+                raise
         return self._send(200, self._issue(uid))
 
     def api_auth_upgrade(self, p):
@@ -1288,12 +1410,16 @@ def main():
         print("[ERR] 数据库不存在，请先运行: python parse.py")
         sys.exit(1)
     ensure_split()
-    ensure_tables()
-    try:  # 兜底：ATTACH 缺文件会静默建空库，这里校验题库确实可读
-        q_one("SELECT COUNT(*) n FROM qdb.questions")
+    borrow()   # 启动期整段复用一个连接：建表迁移 → 题库校验
+    try:
+        ensure_tables()
+        q_one("SELECT COUNT(*) n FROM qdb.questions")   # 兜底：ATTACH 缺文件会静默建空库
+        _warm()      # 预热题库 → OS 页缓存（新账号播种、出题查询首次都更快）
     except Exception as e:
         print(f"[ERR] 题库 kaogong.db 不可读: {e}")
         sys.exit(1)
+    finally:
+        unborrow()
     print(f"[INFO] vault  = {VAULT_ROOT}")
     print(f"[INFO] images = {IMG_ROOT}  exists={os.path.isdir(IMG_ROOT)}")
     print(f"[INFO] 打开浏览器访问:  http://127.0.0.1:{PORT}")
