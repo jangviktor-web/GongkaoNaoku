@@ -20,6 +20,10 @@
 
   /* 墨蓝主色（钢笔蓝黑墨水），只用在真正需要强调的地方 */
   --brand:        oklch(46% 0.088 253);
+  --on-brand:     oklch(98% 0 0);
+  --on-ok:        oklch(98% 0 0);
+  --on-warn:      oklch(23% 0.030 72);
+  --on-bad:       oklch(98% 0 0);
   --brand-2:      oklch(38% 0.080 253);
   --accent:       oklch(58% 0.115 42);     /* 赭石：小面积点缀 */
   --ok:           oklch(52% 0.098 152);
@@ -71,6 +75,10 @@ html[data-theme="dark"]{
   --rule:      oklch(31% 0.014 72);
   --rule-2:    oklch(38% 0.016 72);
   --brand:     oklch(72% 0.075 253);
+  --on-brand:  oklch(18% 0.020 253);
+  --on-ok:     oklch(19% 0.030 152);
+  --on-warn:   oklch(22% 0.035 78);
+  --on-bad:    oklch(18% 0.030 27);
   --brand-2:   oklch(62% 0.082 253);
   --accent:    oklch(74% 0.095 52);
   --ok:        oklch(74% 0.090 152);
@@ -154,16 +162,18 @@ h2:first-child{margin-top:0}
 
 /* ===== 按钮：墨蓝实心，去掉通用渐变与发光 ===== */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--s2);border:none;cursor:pointer;
-  background:var(--brand);color:oklch(98% 0 0);
+  background:var(--brand);color:var(--on-brand);
   padding:11px 20px;border-radius:var(--radius-sm);font-weight:600;font-size:var(--text-sm);
   min-height:40px;transition:.18s var(--ease);text-decoration:none;letter-spacing:.02em}
 .btn:hover{background:var(--brand-2)}
 .btn.ghost{background:var(--surface);border:1px solid var(--rule);color:var(--ink)}
 .btn.ghost:hover{border-color:var(--brand);color:var(--brand);background:var(--surface)}
-.btn.ok{background:var(--ok)} .btn.warn{background:var(--warn)} .btn.danger{background:var(--bad)}
+/* 彩色底按钮的文字色单独给「墨」：暗色主题下 --ok/--warn 是亮色，配白字对比度只有 1.7:1 */
+.btn.ok{background:var(--ok);color:var(--on-ok)} .btn.warn{background:var(--warn);color:var(--on-warn)}
+.btn.danger{background:var(--bad);color:var(--on-bad)}
 .btn.ok:hover,.btn.warn:hover,.btn.danger:hover{filter:brightness(.94)}
 .btn.big{padding:14px 26px;font-size:var(--text-base);min-height:48px}
-.btn.resume{background:var(--accent);color:oklch(99% 0 0)}
+.btn.resume{background:var(--accent);color:oklch(20% 0.030 45)}
 .btn.resume:hover{filter:brightness(.94)}
 .btn.sm{padding:6px 12px;font-size:13px;min-height:32px}
 .btn:disabled{opacity:.42;cursor:not-allowed}
@@ -255,6 +265,12 @@ html[data-theme="dark"] img{background:oklch(28% 0.010 80)}
 .grade .g-good{border-color:var(--brand);color:var(--brand)}
 .grade .g-easy{border-color:var(--ok);color:var(--ok)}
 .grade small{display:block;font-weight:400;color:var(--ink-3);font-size:11px;margin-top:3px}
+/* 评分后：停在解析页，等用户自己决定何时前进 */
+.grade.nextbar{align-items:center;gap:var(--s4)}
+.grade.nextbar .nx-tip{color:var(--ink-3);font-size:var(--fs-sm)}
+.grade.nextbar .nx-go{flex:0 0 auto;min-width:160px;min-height:48px;font-size:var(--fs-base)}
+.grade.nextbar .nx-go small{display:inline;margin-left:6px;color:inherit;opacity:.6;font-size:11px}
+.grade.nextbar .nx-go:focus-visible{outline:2px solid var(--brand);outline-offset:3px}
 .answer-line{font-size:var(--text-base);font-weight:700;margin:var(--s4) 0;letter-spacing:.02em}
 .answer-line.right{color:var(--ok)}.answer-line.wrong{color:var(--bad)}
 .empty{text-align:center;padding:var(--s12) var(--s5);color:var(--ink-3)}

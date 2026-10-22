@@ -4,7 +4,7 @@
    旧版页面被浏览器 / CDN 边缘节点用 max-age=86400 强缓存，导致"改了代码但打开还是旧界面"。
    这里让脚本核对页面里的版本标记：不一致就一次性跳到带版本号的新地址，
    绕过浏览器与边缘节点的两层缓存。kg_healed 防止极端情况下死循环。 */
-const APP_VER = '20261022a';
+const APP_VER = '20261022b';
 let HEALING = false;
 (function selfHeal() {
   try {
@@ -372,7 +372,7 @@ async function startSession(cfg) {
 function renderCard() {
   const S = state.session; const c = S.queue[S.idx];
   if (!c) { clearSession(); return finishSession(); }
-  S.phase = 'question'; S.chosen = null; S.full = null; S.qStart = Date.now();
+  S.phase = 'question'; S.chosen = null; S.full = null; S.graded = 0; S.qStart = Date.now();
   const hasMat = !!c.material; window.__curMatRaw = c.material;
   app.innerHTML = `
   <div class="progress"><div class="pp-main"><span id="pp-txt">${S.idx + 1} / ${S.queue.length} &nbsp;·&nbsp; ${MODE_LABEL[S.mode] || '练习'}模式
@@ -529,10 +529,30 @@ async function doGrade(g) {
   S.times.push(dur); stopLimitTimer();
   try { await POST('/api/grade', { id: c.id, grade: g, choice: S.chosen || '' }); } catch (e) { }
   refreshSide();
-  S.idx++;
-  if (S.idx >= S.queue.length) { await moreCards(); }
-  renderCard();
+  // 不自动跳题：先让用户看完解析再走（只换掉评分区，正文与解析保持原样）
+  S.graded = g;
+  renderNextBar();
   saveSession();
+}
+
+function nextCard() {
+  const S = state.session; if (!S) return;
+  S.graded = 0;
+  S.idx++;
+  if (S.idx >= S.queue.length) moreCards().then(renderCard); else renderCard();
+  saveSession();
+}
+
+function renderNextBar() {
+  const box = document.getElementById('act'); if (!box) return;
+  const S = state.session;
+  const last = S.idx >= S.queue.length - 1;
+  box.innerHTML = `<div class="grade nextbar">
+    <span class="nx-tip">已记录 · 看完解析再继续</span>
+    <button class="btn ok nx-go">${last ? '完成本组 →' : '下一题 →'} <small>空格</small></button>
+  </div>`;
+  box.querySelector('.nx-go').onclick = nextCard;
+  box.querySelector('.nx-go').focus({ preventScroll: true });
 }
 
 /* ---------- 功能2：限时模式倒计时 / 超时自动判错 ---------- */
@@ -568,9 +588,8 @@ async function timeoutCurrent() {
   try { await POST('/api/grade', { id: c.id, grade: 1, timeout: 1, choice: '' }); } catch (e) { }
   S.tally.done++; S.tally.wrong++; S.timeoutN = (S.timeoutN || 0) + 1;
   refreshSide();
-  S.idx++;
-  if (S.idx >= S.queue.length) { await moreCards(); }
-  renderCard();
+  S.graded = 1;
+  renderNextBar();
   saveSession();
 }
 
@@ -638,8 +657,12 @@ document.addEventListener('keydown', (e) => {
         if (o) { S.chosen = o.key; doReveal(); }
       } else if ((e.key === ' ' || e.key === 'Enter') && !answerable) { e.preventDefault(); doReveal(); }
     } else if (S.phase === 'answer') {
-      const map = { '1': 1, '2': 3, '3': 4, '4': 5 };
-      if (map[e.key]) { e.preventDefault(); doGrade(map[e.key]); }
+      if (S.graded) {   // 已评分：空格/回车进入下一题
+        if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); nextCard(); }
+      } else {
+        const map = { '1': 1, '2': 3, '3': 4, '4': 5 };
+        if (map[e.key]) { e.preventDefault(); doGrade(map[e.key]); }
+      }
     }
   }
   if (state.exam && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
