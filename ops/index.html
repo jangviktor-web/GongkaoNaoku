@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>运营面板 · 考公脑库</title>
+<style>
+  :root{
+    --paper:#f7f5f0; --surface:#fffefb; --surface-2:#f0ede6;
+    --ink:#23201c; --ink-2:#55504a; --ink-3:#8a847c;
+    --rule:#e0dbd2; --brand:#3a5680; --ok:#3f7a55; --warn:#a4762c; --bad:#a04b3f;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s8:48px;
+    --r:8px; --ease:cubic-bezier(.16,1,.3,1);
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --paper:#191817; --surface:#211f1d; --surface-2:#2a2724;
+      --ink:#ece8e1; --ink-2:#b6b0a6; --ink-3:#857f76;
+      --rule:#37332e; --brand:#8aa8cf; --ok:#7fb08f; --warn:#d2ab6c; --bad:#cd8b7e;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font:15px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  a{color:var(--brand)}
+  /* ---------- 登录 ---------- */
+  #login{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:var(--s5)}
+  #login .card{width:100%;max-width:380px;background:var(--surface);border:1px solid var(--rule);
+    border-radius:var(--r);padding:var(--s6)}
+  #login h1{margin:0 0 var(--s2);font-size:19px;letter-spacing:.01em}
+  #login p{margin:0 0 var(--s5);color:var(--ink-3);font-size:13px}
+  label{display:block;font-size:12px;color:var(--ink-2);margin-bottom:var(--s2)}
+  input{width:100%;padding:11px 13px;font-size:15px;font-family:inherit;
+    background:var(--surface-2);color:var(--ink);border:1px solid var(--rule);border-radius:6px}
+  input:focus{outline:2px solid var(--brand);outline-offset:1px;border-color:var(--brand)}
+  button{font-family:inherit;cursor:pointer;border:none;border-radius:6px;font-weight:600}
+  #login button{width:100%;margin-top:var(--s4);padding:12px;font-size:15px;
+    background:var(--brand);color:#fff;min-height:46px;transition:.16s var(--ease)}
+  #login button:hover{filter:brightness(.93)}
+  #login button:disabled{opacity:.5;cursor:not-allowed}
+  #err{margin-top:var(--s3);color:var(--bad);font-size:13px;min-height:20px}
+  /* ---------- 主界面 ---------- */
+  #dash{display:none;max-width:1180px;margin:0 auto;padding:var(--s6) var(--s5) var(--s8)}
+  header{display:flex;align-items:baseline;gap:var(--s3);flex-wrap:wrap;
+    padding-bottom:var(--s4);border-bottom:1px solid var(--rule);margin-bottom:var(--s6)}
+  header h1{margin:0;font-size:20px;letter-spacing:.01em}
+  .badge{font-size:11px;padding:2px 8px;border-radius:999px;background:var(--surface-2);
+    color:var(--ink-3);border:1px solid var(--rule)}
+  .spacer{flex:1}
+  .toolbar{display:flex;gap:var(--s2);align-items:center}
+  .seg{display:flex;border:1px solid var(--rule);border-radius:6px;overflow:hidden}
+  .seg button{padding:6px 12px;font-size:12px;background:var(--surface);color:var(--ink-2);
+    border-radius:0;font-weight:500;min-height:32px}
+  .seg button.on{background:var(--brand);color:#fff}
+  .ghost{padding:6px 12px;font-size:12px;background:var(--surface);color:var(--ink-2);
+    border:1px solid var(--rule);border-radius:6px;min-height:32px;font-weight:500}
+  .ghost:hover{border-color:var(--brand);color:var(--brand)}
+  /* 指标卡 */
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+    gap:var(--s3);margin-bottom:var(--s6)}
+  .kpi{background:var(--surface);border:1px solid var(--rule);border-radius:var(--r);padding:var(--s4) var(--s4) var(--s4)}
+  .kpi .k{font-size:12px;color:var(--ink-3);margin-bottom:var(--s2)}
+  .kpi .v{font-size:28px;font-weight:600;line-height:1.15;font-variant-numeric:tabular-nums;
+    font-family:ui-serif,Georgia,"Songti SC",serif}
+  .kpi .s{font-size:11px;color:var(--ink-3);margin-top:var(--s1)}
+  .kpi.hl .v{color:var(--brand)}
+  /* 区块 */
+  section{margin-bottom:var(--s6)}
+  section h2{font-size:13px;font-weight:600;color:var(--ink-2);letter-spacing:.06em;
+    text-transform:uppercase;margin:0 0 var(--s3)}
+  .panel{background:var(--surface);border:1px solid var(--rule);border-radius:var(--r);
+    padding:var(--s4)}
+  /* 柱状趋势 */
+  .chart{display:flex;align-items:flex-end;gap:3px;height:130px;padding-top:var(--s3)}
+  .chart .col{flex:1;display:flex;flex-direction:column;justify-content:flex-end;
+    align-items:center;height:100%;position:relative;min-width:2px}
+  .chart .bar{width:100%;background:var(--brand);border-radius:2px 2px 0 0;min-height:2px;
+    transition:height .3s var(--ease);opacity:.85}
+  .chart .col:hover .bar{opacity:1}
+  .chart .col .tip{position:absolute;bottom:calc(100% + 4px);left:50%;transform:translateX(-50%);
+    background:var(--ink);color:var(--paper);font-size:11px;padding:3px 7px;border-radius:4px;
+    white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .12s;z-index:2}
+  .chart .col:hover .tip{opacity:1}
+  .xaxis{display:flex;justify-content:space-between;font-size:11px;color:var(--ink-3);
+    margin-top:var(--s2);font-family:var(--mono)}
+  /* 表格 */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-weight:600;color:var(--ink-3);font-size:11px;letter-spacing:.05em;
+    text-transform:uppercase;padding:var(--s2) var(--s3);border-bottom:1px solid var(--rule)}
+  td{padding:9px var(--s3);border-bottom:1px solid var(--rule);vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  td.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:12px}
+  .pill{font-size:11px;padding:1px 7px;border-radius:999px;background:var(--surface-2);
+    color:var(--ink-3);border:1px solid var(--rule)}
+  .pill.ok{color:var(--ok);border-color:color-mix(in oklab,var(--ok) 40%,transparent)}
+  .pill.warn{color:var(--warn);border-color:color-mix(in oklab,var(--warn) 40%,transparent)}
+  /* 分布条 */
+  .dist{display:flex;flex-direction:column;gap:var(--s2)}
+  .dist .row{display:flex;align-items:center;gap:var(--s3);font-size:13px}
+  .dist .lbl{width:88px;color:var(--ink-2);flex:none}
+  .dist .track{flex:1;height:8px;background:var(--surface-2);border-radius:4px;overflow:hidden}
+  .dist .track i{display:block;height:100%;background:var(--brand);border-radius:4px;
+    transition:width .3s var(--ease)}
+  .dist .n{width:74px;text-align:right;font-family:var(--mono);font-size:12px;color:var(--ink-2);
+    display:flex;justify-content:flex-end;gap:6px;flex:none}
+  .dist .n small{color:var(--ink-3);font-size:11px;min-width:34px;text-align:right}
+  .dist .row.dim .track i{background:var(--ink-3);opacity:.4}
+  .dist .row.dim .lbl,.dist .row.dim .n{color:var(--ink-3)}
+  @media (max-width:520px){ .chart{gap:1px} .chart .col.min-hide{display:none} }
+  .muted{color:var(--ink-3);font-size:12px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:var(--s4)}
+  @media (max-width:820px){
+    #dash{padding:var(--s4) var(--s3) var(--s6)}
+    .grid2{grid-template-columns:1fr}
+    .kpi .v{font-size:24px}
+  }
+  .loading{color:var(--ink-3);font-size:13px;padding:var(--s5) 0;text-align:center}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="card">
+    <h1>运营面板</h1>
+    <p>只读 · 不含任何用户学习内容</p>
+    <label for="tk">访问口令</label>
+    <input id="tk" type="password" autocomplete="current-password" placeholder="请输入 OPS_TOKEN">
+    <button id="go">进入</button>
+    <div id="err"></div>
+  </div>
+</div>
+
+<div id="dash">
+  <header>
+    <h1>运营面板</h1>
+    <span class="badge" id="scope">只读</span>
+    <span class="spacer"></span>
+    <div class="toolbar">
+      <div class="seg" id="seg">
+        <button data-d="7">7 天</button>
+        <button data-d="30" class="on">30 天</button>
+        <button data-d="90">90 天</button>
+      </div>
+      <button class="ghost" id="refresh">刷新</button>
+      <button class="ghost" id="out">退出</button>
+    </div>
+  </header>
+
+  <div class="kpis" id="kpis"></div>
+
+  <section>
+    <h2>答题活跃度</h2>
+    <div class="panel">
+      <div class="chart" id="chart"></div>
+      <div class="xaxis" id="xaxis"></div>
+      <p class="muted" id="chartnote" style="margin:var(--s3) 0 0"></p>
+    </div>
+  </section>
+
+  <div class="grid2">
+    <section>
+      <h2>新增账号</h2>
+      <div class="panel"><div class="chart" id="chart2"></div><div class="xaxis" id="xaxis2"></div></div>
+    </section>
+    <section>
+      <h2>用户做题量分布</h2>
+      <div class="panel"><div class="dist" id="dist"></div></div>
+    </section>
+  </div>
+
+  <section>
+    <h2>最近活跃账号</h2>
+    <div class="panel" style="padding:0;overflow:auto">
+      <table id="recent"><thead><tr><th>昵称</th><th>类型</th><th>最近答题</th><th style="text-align:right">累计答题</th></tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+
+  <section>
+    <h2>题库与存储健康</h2>
+    <div class="panel" id="health"><div class="loading">读取中…</div></div>
+  </section>
+</div>
+
+<script>
+(function () {
+  var days = 30;
+  var $ = function (s) { return document.querySelector(s); };
+
+  function fmt(n) { return (n == null ? 0 : n).toLocaleString('zh-CN'); }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function api(path, opt) {
+    return fetch('/ops/api/' + path, Object.assign({ credentials: 'same-origin' }, opt || {}))
+      .then(function (r) {
+        if (r.status === 401) { showLogin(); throw new Error('unauth'); }
+        return r.json();
+      });
+  }
+
+  function showLogin() { $('#dash').style.display = 'none'; $('#login').style.display = 'flex'; }
+  function showDash() { $('#login').style.display = 'none'; $('#dash').style.display = 'block'; }
+
+  /* ---------- 登录 ---------- */
+  $('#go').onclick = function () { doLogin(); };
+  $('#tk').onkeydown = function (e) { if (e.key === 'Enter') doLogin(); };
+
+  function doLogin() {
+    var tk = $('#tk').value.trim();
+    if (!tk) return;
+    var btn = $('#go'); btn.disabled = true; $('#err').textContent = '';
+    fetch('/ops/api/login', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: tk })
+    }).then(function (r) { return r.json().then(function (j) { return { s: r.status, j: j }; }); })
+      .then(function (x) {
+        btn.disabled = false;
+        if (x.s === 200) { $('#tk').value = ''; showDash(); load(); }
+        else $('#err').textContent = (x.j && x.j.error) || '登录失败';
+      })
+      .catch(function () { btn.disabled = false; $('#err').textContent = '网络异常'; });
+  }
+
+  $('#out').onclick = function () {
+    fetch('/ops/api/logout', { method: 'POST', credentials: 'same-origin' })
+      .then(function () { showLogin(); });
+  };
+  $('#refresh').onclick = function () { load(); };
+  $('#seg').onclick = function (e) {
+    var b = e.target.closest('button[data-d]'); if (!b) return;
+    days = +b.dataset.d;
+    [].forEach.call($('#seg').children, function (x) { x.classList.toggle('on', x === b); });
+    load();
+  };
+
+  /* ---------- 图表 ---------- */
+  function bars(el, xel, rows, key, tooltipFn) {
+    if (!rows.length) {
+      el.innerHTML = '<div class="loading">区间内无数据</div>';
+      if (xel) xel.textContent = '';
+      return;
+    }
+    var max = Math.max.apply(null, rows.map(function (r) { return r[key] || 0; }).concat([1]));
+    el.innerHTML = rows.map(function (r) {
+      var n = r[key] || 0;
+      // 0 就不画（min-height 只给非零值，避免"啥也没发生"被画成一根柱子）
+      var h = n ? Math.max(2, n / max * 100) : 0;
+      return '<div class="col"><div class="tip">' + esc(tooltipFn(r)) + '</div>' +
+             '<div class="bar" style="height:' + h.toFixed(1) + '%"></div></div>';
+    }).join('');
+    if (xel) xel.innerHTML = '<span>' + esc(rows[0].d.slice(5)) + '</span>' +
+      (rows.length > 14 ? '<span>' + esc(rows[Math.floor((rows.length - 1) / 2)].d.slice(5)) + '</span>' : '') +
+      '<span>' + esc(rows[rows.length - 1].d.slice(5)) + '</span>';
+  }
+
+  /* ---------- 主渲染 ---------- */
+  function load() {
+    api('overview?days=' + days).then(render).catch(function () {});
+  }
+
+  function render(d) {
+    var a = d.accounts, ac = d.active, an = d.answers;
+    $('#scope').textContent = '只读 · ' + d.scope;
+
+    var kpi = [
+      { k: '今日活跃', v: ac.today, s: '近 7 天 ' + fmt(ac.d7) + ' · 近 30 天 ' + fmt(ac.d30), hl: true },
+      { k: '今日答题', v: an.today, s: '近 7 天 ' + fmt(an.d7) + ' · 累计 ' + fmt(an.all) },
+      { k: '正式账号', v: a.real, s: '游客 ' + fmt(a.anon) + ' · 合计 ' + fmt(a.total) },
+      { k: '今日新增', v: a.new_today, s: '近 7 天 ' + fmt(a.new_7) },
+    ];
+    $('#kpis').innerHTML = kpi.map(function (x) {
+      return '<div class="kpi' + (x.hl ? ' hl' : '') + '"><div class="k">' + x.k + '</div>' +
+             '<div class="v">' + fmt(x.v) + '</div><div class="s">' + x.s + '</div></div>';
+    }).join('');
+
+    bars($('#chart'), $('#xaxis'), d.trend, 'answers', function (r) {
+      return r.d + ' · ' + r.answers + ' 题 · ' + r.users + ' 人';
+    });
+    $('#chartnote').textContent = d.trend.length
+      ? '柱高 = 每日答题量；悬停看当日人数。活跃口径 = ' + d.scope + '中有答题记录的去重账号。'
+      : '';
+
+    bars($('#chart2'), $('#xaxis2'), d.reg, 'n', function (r) {
+      return r.d + ' · 新增 ' + r.n + '（正式 ' + (r.real_n || 0) + '）';
+    });
+
+    var order = ['100+ 题', '30-99 题', '10-29 题', '1-9 题', '0 题'];
+    var map = {}; d.stick.forEach(function (x) { map[x.b] = x.n; });
+    var tot = Math.max(1, d.stick.reduce(function (s, x) { return s + x.n; }, 0));
+    $('#dist').innerHTML = order.map(function (k) {
+      var n = map[k] || 0, pc = n / tot * 100;
+      var zero = (k === '0 题');
+      return '<div class="row' + (zero ? ' dim' : '') + '"><span class="lbl">' + k + '</span>' +
+             '<span class="track"><i style="width:' + pc.toFixed(1) + '%"></i></span>' +
+             '<span class="n">' + fmt(n) + '<small>' + (pc < 0.1 && n ? '&lt;0.1' : pc.toFixed(pc >= 10 ? 0 : 1)) + '%</small></span></div>';
+    }).join('');
+
+    $('#recent tbody').innerHTML = d.recent.length ? d.recent.map(function (r) {
+      return '<tr><td>' + esc(r.name) + '</td>' +
+        '<td><span class="pill' + (r.anon ? '' : ' ok') + '">' + (r.anon ? '游客' : '正式') + '</span></td>' +
+        '<td class="num">' + esc((r.last_ts || '').replace('T', ' ').slice(5, 16)) + '</td>' +
+        '<td class="num">' + fmt(r.answers) + '</td></tr>';
+    }).join('') : '<tr><td colspan="4" class="muted" style="padding:16px">近 7 天无活跃账号</td></tr>';
+
+    api('health').then(renderHealth).catch(function () {});
+  }
+
+  function renderHealth(h) {
+    var okInt = h.integrity === 'ok';
+    var rows = [
+      ['题库题量', fmt(h.questions) + ' 题', ''],
+      ['题库完整性', h.integrity, okInt ? 'ok' : 'warn'],
+      ['学习进度行', fmt(h.srs_rows) + ' 行', ''],
+      ['缺解析题', fmt(h.no_analysis) + ' 题', h.no_analysis ? 'warn' : 'ok'],
+      ['含图片题', fmt(h.no_image_flag) + ' 题', ''],
+      ['用户库', fmt(h.users_db_mb) + ' MB', ''],
+      ['题库文件', fmt(h.qbank_mb) + ' MB', ''],
+      ['日志模式', h.db_journal_mode, ''],
+    ];
+    var mods = (h.by_module || []).map(function (m) {
+      return '<span class="pill">' + esc(m.m) + ' ' + fmt(m.n) + '</span>';
+    }).join(' ');
+    $('#health').innerHTML =
+      '<table>' + rows.map(function (r) {
+        return '<tr><td style="width:130px;color:var(--ink-2)">' + r[0] + '</td>' +
+               '<td><span class="pill ' + (r[2] || '') + '">' + esc(r[1]) + '</span></td></tr>';
+      }).join('') + '</table>' +
+      '<p class="muted" style="margin:var(--s4) 0 0">模块分布：' + mods + '</p>';
+  }
+
+  /* 进页面先探会话 */
+  api('session').then(showDash).catch(function () { showLogin(); });
+})();
+</script>
+</body>
+</html>

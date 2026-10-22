@@ -3,7 +3,7 @@
 """考公间隔重复系统 - 零依赖后端 (Python 标准库)
 启动:  python server.py    然后浏览器打开 http://127.0.0.1:8300
 """
-import os, re, sys, json, gzip, shutil, sqlite3, datetime, mimetypes, urllib.parse, threading, email.utils, hashlib, secrets
+import os, re, sys, json, gzip, shutil, sqlite3, datetime, mimetypes, urllib.parse, threading, email.utils, hashlib, secrets, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -22,6 +22,7 @@ USERS_DB_PATH = os.path.join(HERE, "users.db")      # 用户库（主连接：�
 _LOCAL_IMG = os.path.join(HERE, "90-图片")
 IMG_ROOT = _LOCAL_IMG if os.path.isdir(_LOCAL_IMG) else os.path.join(VAULT_ROOT, "90-图片")
 STATIC = os.path.join(HERE, "static")
+OPS_DIR = os.path.join(HERE, "ops")          # 运营面板静态页（与用户端完全分离）
 PORT = int(os.environ.get("PORT") or os.environ.get("KAOGONG_PORT") or "8300")
 mimetypes.add_type("image/webp", ".webp")
 
@@ -546,6 +547,156 @@ def build_where(module, category, kadian):
     return (" AND " + " AND ".join(cond)) if cond else "", args
 
 
+# ============ 只读运营面板（/ops）============
+# 设计约束：
+# 1. 口令只从环境变量 OPS_TOKEN 取，不落库、不进代码库；未配置则整个面板不可用（默认关闭）。
+# 2. 会话令牌只存在进程内存（重启即失效），与用户 token 体系完全隔离 —— 普通用户 token 进不来。
+# 3. 全部接口只读：只做 SELECT，没有任何写库路径。
+OPS_TOKEN = (os.environ.get("OPS_TOKEN") or "").strip()
+_OPS_SESS = {}            # sid -> (expire_ts, ua_hash)
+_OPS_TTL = 8 * 3600
+_OPS_TRIES = {}           # ip -> [timestamps]，失败口令限流
+_OPS_HIDE_ANON = os.environ.get("OPS_HIDE_ANON", "1") != "0"   # 默认不把游客算进活跃
+
+
+def ops_enabled():
+    """口令至少 16 位才启用 —— 短口令等同没口令，宁可面板不可用。"""
+    return len(OPS_TOKEN) >= 16
+
+
+def _ops_rate_ok(ip):
+    """同一 IP 10 分钟内最多 8 次失败，防暴力猜口令。"""
+    now_ts = time.time()
+    lst = [t for t in _OPS_TRIES.get(ip, []) if now_ts - t < 600]
+    _OPS_TRIES[ip] = lst
+    return len(lst) < 8
+
+
+def _ops_fail(ip):
+    _OPS_TRIES.setdefault(ip, []).append(time.time())
+
+
+def ops_issue():
+    sid = secrets.token_urlsafe(32)
+    _OPS_SESS[sid] = (time.time() + _OPS_TTL, None)
+    if len(_OPS_SESS) > 32:      # 会话上限，防内存被刷
+        for k in sorted(_OPS_SESS, key=lambda k: _OPS_SESS[k][0])[:len(_OPS_SESS) - 32]:
+            _OPS_SESS.pop(k, None)
+    return sid
+
+
+def ops_check(sid):
+    rec = _OPS_SESS.get(sid or "")
+    if not rec:
+        return False
+    if rec[0] < time.time():
+        _OPS_SESS.pop(sid, None)
+        return False
+    return True
+
+
+def ops_drop(sid):
+    _OPS_SESS.pop(sid or "", None)
+
+
+def ops_overview(days=30):
+    days = max(1, min(365, int(days)))
+    anon_cond = " AND IFNULL(u.anon,0)=0" if _OPS_HIDE_ANON else ""
+    t = today()
+    c = db()
+    one = lambda sql, a=(): (c.execute(sql, a).fetchone() or [0])[0]
+
+    # --- 账号 ---
+    total_users = one("SELECT COUNT(*) FROM users")
+    real_users = one("SELECT COUNT(*) FROM users WHERE IFNULL(anon,0)=0")
+    anon_users = total_users - real_users
+    new_today = one("SELECT COUNT(*) FROM users WHERE date(created)=?", (t,))
+    new_7 = one("SELECT COUNT(*) FROM users WHERE date(created)>=date(?,'-6 day')", (t,))
+
+    # --- 活跃（有答题记录 = 真学过的证据）---
+    def active_users(d0):
+        return one(f"""SELECT COUNT(DISTINCT r.user_id) FROM reviews r JOIN users u ON u.id=r.user_id
+                       WHERE date(r.ts)>=date(?,'-{d0} day'){anon_cond}""", (t,))
+    act_today = one(f"""SELECT COUNT(DISTINCT r.user_id) FROM reviews r JOIN users u ON u.id=r.user_id
+                        WHERE date(r.ts)=?{anon_cond}""", (t,))
+    act_7, act_30 = active_users(6), active_users(29)
+
+    # --- 答题量 ---
+    ans_today = one("SELECT COUNT(*) FROM reviews WHERE date(ts)=?", (t,))
+    ans_7 = one("SELECT COUNT(*) FROM reviews WHERE date(ts)>=date(?,'-6 day')", (t,))
+    ans_all = one("SELECT COUNT(*) FROM reviews")
+
+    # --- 日期轴先铺满（没数据的日期补 0），否则柱子会挤在一侧、刻度也对不上 ---
+    d0 = (datetime.date.today() - datetime.timedelta(days=days - 1)).isoformat()
+    axis = [(datetime.date.fromisoformat(d0) + datetime.timedelta(days=i)).isoformat()
+            for i in range(days)]
+
+    # --- 每日趋势 ---
+    rows = {r["d"]: dict(r) for r in c.execute(f"""
+        SELECT date(r.ts) d, COUNT(DISTINCT r.user_id) users, COUNT(*) answers,
+               SUM(CASE WHEN r.grade>=3 THEN 1 ELSE 0 END) right_n
+        FROM reviews r JOIN users u ON u.id=r.user_id
+        WHERE date(r.ts)>=date(?,'-{days - 1} day'){anon_cond}
+        GROUP BY d ORDER BY d""", (t,))}
+    trend = [rows.get(d) or {"d": d, "users": 0, "answers": 0, "right_n": 0} for d in axis]
+
+    # --- 新增账号趋势 ---
+    rrows = {r["d"]: dict(r) for r in c.execute(f"""
+        SELECT date(u.created) d, COUNT(*) n,
+               SUM(CASE WHEN IFNULL(u.anon,0)=0 THEN 1 ELSE 0 END) real_n
+        FROM users u WHERE date(u.created)>=date(?,'-{days - 1} day')
+        GROUP BY d ORDER BY d""", (t,))}
+    reg = [rrows.get(d) or {"d": d, "n": 0, "real_n": 0} for d in axis]
+
+    # --- 用户粘性分布 ---
+    stick = [dict(r) for r in c.execute(f"""
+        SELECT CASE WHEN n>=100 THEN '100+ 题' WHEN n>=30 THEN '30-99 题'
+                    WHEN n>=10 THEN '10-29 题' WHEN n>=1 THEN '1-9 题' ELSE '0 题' END b,
+               COUNT(*) n FROM (
+            SELECT u.id, COUNT(r.user_id) n FROM users u
+            LEFT JOIN reviews r ON r.user_id=u.id WHERE 1=1{anon_cond} GROUP BY u.id)
+        GROUP BY b""")]
+
+    # --- 最近活跃账号（只显示昵称与量级，不含任何学习内容）---
+    recent = [dict(r) for r in c.execute(f"""
+        SELECT u.name, IFNULL(u.anon,0) anon, MAX(r.ts) last_ts, COUNT(*) answers
+        FROM reviews r JOIN users u ON u.id=r.user_id
+        WHERE date(r.ts)>=date(?,'-6 day'){anon_cond}
+        GROUP BY u.id ORDER BY last_ts DESC LIMIT 12""", (t,))]
+
+    return {
+        "today": t,
+        "accounts": {"total": total_users, "real": real_users, "anon": anon_users,
+                     "new_today": new_today, "new_7": new_7},
+        "active": {"today": act_today, "d7": act_7, "d30": act_30},
+        "answers": {"today": ans_today, "d7": ans_7, "all": ans_all},
+        "trend": trend, "reg": reg, "stick": stick, "recent": recent,
+        "scope": "正式账号" if _OPS_HIDE_ANON else "含游客",
+    }
+
+
+def ops_health():
+    """题库与库文件健康度（只读 PRAGMA / 计数）。"""
+    c = db()
+    out = {"questions": q_one("SELECT COUNT(*) n FROM qdb.questions")["n"]}
+    try:
+        out["integrity"] = c.execute("PRAGMA quick_check").fetchone()[0]
+    except Exception as e:
+        out["integrity"] = "ERR: " + str(e)[:80]
+    try:
+        out["users_db_mb"] = round(os.path.getsize(USERS_DB_PATH) / 1048576)
+        out["qbank_mb"] = round(os.path.getsize(DB_PATH) / 1048576)
+    except Exception:
+        pass
+    out["srs_rows"] = q_one("SELECT COUNT(*) n FROM srs")["n"]
+    out["no_analysis"] = q_one("SELECT COUNT(*) n FROM qdb.questions WHERE IFNULL(analysis,'')=''")["n"]
+    out["no_image_flag"] = q_one("SELECT COUNT(*) n FROM qdb.questions WHERE has_image=1")["n"]
+    out["by_module"] = q_all("SELECT module m, COUNT(*) n FROM qdb.questions GROUP BY module ORDER BY n DESC")
+    out["db_journal_mode"] = c.execute("PRAGMA journal_mode").fetchone()[0]
+    out["ops_scope"] = "正式账号" if _OPS_HIDE_ANON else "含游客"
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -639,6 +790,15 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/" or path == "/index.html":
             return self._file(os.path.join(STATIC, "index.html"), cache=True, revalidate=True)
+        if path == "/ops" or path == "/ops/":
+            # 未配置口令 → 404，连"这里有个后台"都不暴露
+            if not ops_enabled():
+                return self._send(404, {"error": "no route"})
+            fp = os.path.join(OPS_DIR, "index.html")
+            return self._file(fp, cache=False)
+        if path.startswith("/ops/api/"):
+            return self.ops_api(path[len("/ops/api/"):], g)
+
         if path == "/favicon.ico":
             return self._send(200, b"", "image/x-icon")
         if path == "/sw.js":
@@ -690,6 +850,9 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(raw.decode("utf-8"))
         except Exception:
             payload = {}
+        if path in ("/ops/api/login", "/ops/api/logout"):
+            return self.ops_post(path, payload)
+
         routes = {
             "/api/grade": self.api_grade,
             "/api/note": self.api_note,
@@ -732,6 +895,65 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     # ---------- GET API ----------
+    # ---------- 只读运营面板 ----------
+    def _ops_sid(self, g):
+        sid = g("sid") or self.headers.get("X-Ops-Sid") or ""
+        if not sid:
+            ck = self.headers.get("Cookie") or ""
+            for part in ck.split(";"):
+                k, _, v = part.strip().partition("=")
+                if k == "kg_ops":
+                    sid = v
+        return sid
+
+    def _ops_guard(self, g):
+        """返回 True 表示已鉴权；否则已自行响应 401/429，调用方直接 return。"""
+        if not ops_enabled():
+            self._send(404, {"error": "no route"})
+            return False
+        if not ops_check(self._ops_sid(g)):
+            self._send(401, {"error": "需要运营口令"})
+            return False
+        return True
+
+    def ops_post(self, path, p):
+        ip = self.client_address[0]
+        if not ops_enabled():
+            return self._send(404, {"error": "no route"})
+        if path == "/ops/api/logout":
+            ops_drop(self._ops_sid(lambda k, d="": (p.get(k) or d)))
+            return self._send(200, {"ok": True}, extra={
+                "Set-Cookie": "kg_ops=; Path=/ops; Max-Age=0; HttpOnly; SameSite=Strict"})
+        # 登录
+        if not _ops_rate_ok(ip):
+            return self._send(429, {"error": "尝试过于频繁，请 10 分钟后再试"})
+        got = (p.get("token") or "").strip()
+        if not got or not secrets.compare_digest(got, OPS_TOKEN):
+            _ops_fail(ip)
+            time.sleep(0.4)          # 拖慢暴力猜解
+            return self._send(401, {"error": "口令不正确"})
+        sid = ops_issue()
+        return self._send(200, {"ok": True}, extra={
+            "Set-Cookie": "kg_ops=%s; Path=/ops; Max-Age=%d; HttpOnly; SameSite=Strict" % (sid, _OPS_TTL)})
+
+    def ops_api(self, name, g):
+        if not self._ops_guard(g):
+            return
+        borrow()          # 只读也要独立连接：不与主站请求抢同一条连接
+        try:
+            if name == "overview":
+                return self._send(200, ops_overview(_int(g("days"), 30)))
+            if name == "health":
+                return self._send(200, ops_health())
+            if name == "session":
+                return self._send(200, {"ok": True, "scope": "正式账号" if _OPS_HIDE_ANON else "含游客"})
+            return self._send(404, {"error": "no such ops api"})
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            return self._send(500, {"error": str(e)})
+        finally:
+            unborrow()
+
     def api(self, path, g):
         if path == "/api/bootstrap":
             mods = q_all("SELECT module, COUNT(*) n FROM qdb.questions GROUP BY module ORDER BY n DESC")
