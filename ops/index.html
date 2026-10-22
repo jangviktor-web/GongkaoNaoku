@@ -315,7 +315,10 @@
     var okInt = h.integrity === 'ok';
     var rows = [
       ['题库题量', fmt(h.questions) + ' 题', ''],
-      ['题库完整性', h.integrity, okInt ? 'ok' : 'warn'],
+      ['题库完整性', h.integrity === 'checking' ? '后台自检中' : h.integrity,
+        okInt ? 'ok' : (h.integrity === 'checking' ? '' : 'warn')],
+      ['上次自检', h.integrity_at ? (h.integrity_at.replace('T', ' ').slice(5, 16) +
+        (h.integrity_took != null ? '（' + h.integrity_took + 's）' : '')) : '尚未完成', ''],
       ['学习进度行', fmt(h.srs_rows) + ' 行', ''],
       ['缺解析题', fmt(h.no_analysis) + ' 题', h.no_analysis ? 'warn' : 'ok'],
       ['含图片题', fmt(h.no_image_flag) + ' 题', ''],

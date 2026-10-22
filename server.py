@@ -675,14 +675,39 @@ def ops_overview(days=30):
     }
 
 
+# 完整性自检很贵：1.8GB 的 users.db 上 PRAGMA quick_check(1) 实测 114 秒。
+# 放进 HTTP 请求里必然把面板拖死（曾因此稳定超时 180s），改成后台线程定期跑、接口只读结果。
+_INTEG = {"state": "checking", "at": None, "took": None}
+_INTEG_LOCK = threading.Lock()
+
+
+def _integrity_worker():
+    """每 6 小时做一次 quick_check(1)（1 = 发现问题即停，比全量快），结果写进 _INTEG。"""
+    while True:
+        t0 = time.time()
+        try:
+            c = sqlite3.connect(USERS_DB_PATH, timeout=60)
+            try:
+                c.execute("PRAGMA busy_timeout=60000")
+                r = c.execute("PRAGMA quick_check(1)").fetchone()
+                res = r[0] if r else "unknown"
+            finally:
+                c.close()
+        except Exception as e:
+            res = "ERR: " + str(e)[:80]
+        with _INTEG_LOCK:
+            _INTEG.update(state=res, at=now(), took=round(time.time() - t0, 1))
+        time.sleep(6 * 3600)
+
+
 def ops_health():
-    """题库与库文件健康度（只读 PRAGMA / 计数）。"""
+    """题库与库文件健康度（只读，全部走计数与缓存，不做重活）。"""
     c = db()
     out = {"questions": q_one("SELECT COUNT(*) n FROM qdb.questions")["n"]}
-    try:
-        out["integrity"] = c.execute("PRAGMA quick_check").fetchone()[0]
-    except Exception as e:
-        out["integrity"] = "ERR: " + str(e)[:80]
+    with _INTEG_LOCK:
+        out["integrity"] = _INTEG["state"]
+        out["integrity_at"] = _INTEG["at"]
+        out["integrity_took"] = _INTEG["took"]
     try:
         out["users_db_mb"] = round(os.path.getsize(USERS_DB_PATH) / 1048576)
         out["qbank_mb"] = round(os.path.getsize(DB_PATH) / 1048576)
@@ -1645,6 +1670,10 @@ def main():
     print(f"[INFO] vault  = {VAULT_ROOT}")
     print(f"[INFO] images = {IMG_ROOT}  exists={os.path.isdir(IMG_ROOT)}")
     print(f"[INFO] 打开浏览器访问:  http://127.0.0.1:{PORT}")
+    # 运营面板启用时才跑完整性自检（守护线程，挂了不影响主服务）
+    if ops_enabled():
+        threading.Thread(target=_integrity_worker, daemon=True, name="ops-integrity").start()
+        print("[INFO] 运营面板已启用，完整性自检转入后台")
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     try:
         srv.serve_forever()
