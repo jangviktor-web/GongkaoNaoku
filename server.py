@@ -93,6 +93,23 @@ def today():
 def now():
     return datetime.datetime.now().isoformat(timespec="seconds")
 
+_APP_VER = {"v": None, "mtime": None}
+
+def app_ver():
+    """当前前端版本号：以 index.html 的 kg-app-ver 为唯一来源。"""
+    fp = os.path.join(STATIC, "index.html")
+    try:
+        mt = os.stat(fp).st_mtime
+        if _APP_VER["mtime"] == mt and _APP_VER["v"]:
+            return _APP_VER["v"]
+        with open(fp, encoding="utf-8") as f:
+            m = re.search(r'name="kg-app-ver"\s+content="([^"]+)"', f.read())
+        v = m.group(1) if m else "0"
+        _APP_VER.update(v=v, mtime=mt)
+        return v
+    except Exception:
+        return _APP_VER["v"] or "0"
+
 def q_one(sql, args=()):
     r = db().execute(sql, args).fetchone()
     return dict(r) if r else None
@@ -675,39 +692,40 @@ def ops_overview(days=30):
     }
 
 
-# 完整性自检很贵：1.8GB 的 users.db 上 PRAGMA quick_check(1) 实测 114 秒。
-# 放进 HTTP 请求里必然把面板拖死（曾因此稳定超时 180s），改成后台线程定期跑、接口只读结果。
-_INTEG = {"state": "checking", "at": None, "took": None}
-_INTEG_LOCK = threading.Lock()
+# 完整性自检很贵：1.8GB 的 users.db 上 PRAGMA quick_check 实测要分钟级，
+# 且 journal_mode=delete 下它会持共享锁把并发写全堵住（曾导致游客登录 database is locked）。
+# 结论：这个操作不属于 HTTP 请求，也不该跟服务跑在同一个连接/线程里。
+# 做法：接口只报告 state 文件；真正的检查由独立进程（运维脚本/低峰期 cron）写文件。
+_INTEG_FILE = os.path.join(HERE, "kaogong-integrity.json")
+_INTEG_CACHE = {"mtime": None, "data": None}
 
 
-def _integrity_worker():
-    """每 6 小时做一次 quick_check(1)（1 = 发现问题即停，比全量快），结果写进 _INTEG。"""
-    while True:
-        t0 = time.time()
-        try:
-            c = sqlite3.connect(USERS_DB_PATH, timeout=60)
-            try:
-                c.execute("PRAGMA busy_timeout=60000")
-                r = c.execute("PRAGMA quick_check(1)").fetchone()
-                res = r[0] if r else "unknown"
-            finally:
-                c.close()
-        except Exception as e:
-            res = "ERR: " + str(e)[:80]
-        with _INTEG_LOCK:
-            _INTEG.update(state=res, at=now(), took=round(time.time() - t0, 1))
-        time.sleep(6 * 3600)
+def _integrity_read():
+    """读最近一次自检结果（独立进程写入的文件），带 mtime 缓存，绝不触发实际检查。"""
+    try:
+        st = os.stat(_INTEG_FILE)
+    except Exception:
+        return {"state": "未执行", "at": None, "took": None,
+                "how": "由服务器定时任务或手动执行 check_integrity.py 生成"}
+    if _INTEG_CACHE["mtime"] == st.st_mtime:
+        return _INTEG_CACHE["data"]
+    try:
+        with open(_INTEG_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        data = {"state": "读取失败: " + str(e)[:60], "at": None, "took": None}
+    _INTEG_CACHE.update(mtime=st.st_mtime, data=data)
+    return data
 
 
 def ops_health():
     """题库与库文件健康度（只读，全部走计数与缓存，不做重活）。"""
     c = db()
     out = {"questions": q_one("SELECT COUNT(*) n FROM qdb.questions")["n"]}
-    with _INTEG_LOCK:
-        out["integrity"] = _INTEG["state"]
-        out["integrity_at"] = _INTEG["at"]
-        out["integrity_took"] = _INTEG["took"]
+    ig = _integrity_read()
+    out["integrity"] = ig.get("state") or "未执行"
+    out["integrity_at"] = ig.get("at")
+    out["integrity_took"] = ig.get("took")
     try:
         out["users_db_mb"] = round(os.path.getsize(USERS_DB_PATH) / 1048576)
         out["qbank_mb"] = round(os.path.getsize(DB_PATH) / 1048576)
@@ -832,6 +850,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 with open(os.path.join(STATIC, "sw.js"), "rb") as f:
                     data = f.read()
+                # SW 版本号以 index.html 的 kg-app-ver 为唯一来源，避免三处手改漏一处
+                data = data.replace(b"__APP_VER__", app_ver().encode())
             except Exception:
                 return self._send(404, {"error": "not found"})
             return self._send(200, data, "application/javascript; charset=utf-8",
@@ -1670,10 +1690,6 @@ def main():
     print(f"[INFO] vault  = {VAULT_ROOT}")
     print(f"[INFO] images = {IMG_ROOT}  exists={os.path.isdir(IMG_ROOT)}")
     print(f"[INFO] 打开浏览器访问:  http://127.0.0.1:{PORT}")
-    # 运营面板启用时才跑完整性自检（守护线程，挂了不影响主服务）
-    if ops_enabled():
-        threading.Thread(target=_integrity_worker, daemon=True, name="ops-integrity").start()
-        print("[INFO] 运营面板已启用，完整性自检转入后台")
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     try:
         srv.serve_forever()

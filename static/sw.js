@@ -9,7 +9,7 @@
  *   /api/* 与图片同样完全不拦截。
  * 任何一步失败都退回普通网络请求，最坏情况等同于没有 SW。
  */
-const SW_VER = '20261022b';
+const SW_VER = '__APP_VER__';
 
 self.addEventListener('install', () => { self.skipWaiting(); });
 self.addEventListener('activate', (e) => { e.waitUntil(self.clients.claim()); });

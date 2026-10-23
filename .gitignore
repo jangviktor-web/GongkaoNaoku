@@ -37,3 +37,6 @@ Thumbs.db
 # ---------- 本机包装+codegraph 索引导出 ----------
 *.egg
 .codegraph/
+
+# 离线健康快检结果（由 check_integrity.py 生成，不入库）
+kaogong-integrity.json

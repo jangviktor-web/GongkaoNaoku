@@ -4,7 +4,7 @@
    旧版页面被浏览器 / CDN 边缘节点用 max-age=86400 强缓存，导致"改了代码但打开还是旧界面"。
    这里让脚本核对页面里的版本标记：不一致就一次性跳到带版本号的新地址，
    绕过浏览器与边缘节点的两层缓存。kg_healed 防止极端情况下死循环。 */
-const APP_VER = '20261022b';
+const APP_VER = '20261023a';
 let HEALING = false;
 (function selfHeal() {
   try {
@@ -37,18 +37,33 @@ function setTok(t) {
 }
 function withU(p) { return p + (p.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(tok()); }
 
+/* 统一的失败语义：接口不通就抛异常，交给 nav() 的 catch 显示"重试"。
+   以前这里返回 {}，调用方直接取字段就抛 TypeError，而异常没人接，
+   页面永远停在"加载中…"——这正是线上偶发空白的真实原因。 */
+class ApiError extends Error {
+  constructor(msg, status) { super(msg); this.status = status; }
+}
 async function API(p) {
-  const r = await fetch(withU(p));
-  if (r.status === 401) { onExpired(); return {}; }
-  return r.json();
+  let r;
+  try { r = await fetch(withU(p)); }
+  catch (e) { throw new ApiError('网络连接失败，请检查网络后重试', 0); }
+  if (r.status === 401) { onExpired(); throw new ApiError('登录已失效', 401); }
+  if (!r.ok) throw new ApiError('服务器返回 ' + r.status + '，请稍后重试', r.status);
+  try { return await r.json(); }
+  catch (e) { throw new ApiError('服务器返回数据异常，请重试', r.status); }
 }
 async function POST(p, b) {
-  const r = await fetch(p, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(Object.assign({}, b, { token: tok() })),
-  });
-  if (r.status === 401) { onExpired(); return {}; }
-  return r.json();
+  let r;
+  try {
+    r = await fetch(p, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({}, b, { token: tok() })),
+    });
+  } catch (e) { throw new ApiError('网络连接失败，请检查网络后重试', 0); }
+  if (r.status === 401) { onExpired(); throw new ApiError('登录已失效', 401); }
+  if (!r.ok) throw new ApiError('服务器返回 ' + r.status + '，请稍后重试', r.status);
+  try { return await r.json(); }
+  catch (e) { throw new ApiError('服务器返回数据异常，请重试', r.status); }
 }
 function onExpired() { setTok(''); showLogin('登录已失效，请重新登录'); }
 const esc = (s) => (s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -164,7 +179,17 @@ function resumeAgo(ts) {
 }
 
 /* ---------- router ---------- */
-function nav() {
+/* 任何视图抛错都不能让页面停在"加载中…"：统一兜住并给重试入口。 */
+async function nav() {
+  try {
+    return await route();
+  } catch (e) {
+    if (e && e.status === 401) return;          // 已跳登录，无需重复提示
+    console.error('[nav]', e);
+    fatal((e && e.message) || e);
+  }
+}
+function route() {
   const h = (location.hash || '#/').split('?')[0];
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('active', a.getAttribute('href').split('?')[0] === h));
   if (h === '#/') return viewDashboard();
@@ -182,7 +207,7 @@ function nav() {
   if (h === '#/detail') return viewDetail(+new URLSearchParams(location.hash.split('?')[1]).get('id'));
   viewDashboard();
 }
-window.addEventListener('hashchange', nav);
+window.addEventListener('hashchange', () => { nav(); });
 
 /* ---------- side stats ---------- */
 async function refreshSide() {
@@ -218,8 +243,8 @@ async function viewDashboard() {
       return `<a class="btn big resume" href="#" onclick="try{resumeSession()}catch(e){console.error(e)};return false;">⏯ 继续上次刷题（${label} · 剩 ${left} 题）· 上次 ${t}</a>`;
     } catch (e) { return ''; }
   })();
-  const dueMod = {}; s.due_by_module.forEach(d => dueMod[d.m] = d.n);
-  const mastery = s.mastery; const mkeys = ['学习中', '初记', '短期', '长期', '稳固'];
+  const dueMod = {}; (s.due_by_module || []).forEach(d => dueMod[d.m] = d.n);
+  const mastery = s.mastery || {}; const mkeys = ['学习中', '初记', '短期', '长期', '稳固'];
   const maxM = Math.max(1, ...mkeys.map(k => mastery[k] || 0));
   app.innerHTML = `
   <h1>总览面板</h1><p class="sub">共 ${BOOT.total.toLocaleString()} 道行测真题 · 逐题深度标注 · 按记忆曲线安排复习</p>
@@ -1572,5 +1597,5 @@ async function doDeleteUser() {
 
   const un = document.getElementById('user-name'); if (un) un.onclick = () => openUserMenu();
   syncUserChip();
-  nav(); refreshSide();
+  nav().catch(() => { }); refreshSide().catch(() => { });
 })();

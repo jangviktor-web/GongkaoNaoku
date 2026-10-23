@@ -14,7 +14,7 @@
 ![存储](https://img.shields.io/badge/存储-SQLite%20单文件-blue)
 ![前端](https://img.shields.io/badge/前端-原生%20JS%20SPA-orange)
 ![许可](https://img.shields.io/badge/许可-仅供个人学习-lightgrey)
-![版本](https://img.shields.io/badge/版本-v1.3.0-2EA043)
+![版本](https://img.shields.io/badge/版本-v1.3.1-2EA043)
 
 📚 题库与蒸馏方法来自开源项目 [ERRRC/xingcezhenti](https://github.com/ERRRC/xingcezhenti)（515 卷 / 58,890 题行），本项目在其基础上**逐题去重为 27,506 道**，并做结构化深度标注与 SM-2 复习排程
 
@@ -24,7 +24,7 @@
 
 ## 更新日志
 
-> 最新：**v1.3.0** — 新增只读运营面板（`/ops`）、修复注册/游客登录偶发 `database is locked`、修复评分后解析看不到、纸感 UI 重做。
+> 最新：**v1.3.1** — 修复页面停在「加载中…」/ 空白（接口失败异常被吞）、修复健康检查锁库、新增只读运营面板（`/ops`）、修复注册/游客登录偶发 `database is locked`、修复评分后解析看不到、纸感 UI 重做。
 > 完整版本说明见 [CHANGELOG.md](CHANGELOG.md) ｜ [Releases](https://gitee.com/jangviktor/GongkaoNaoku/releases)
 
 ## 目录
